@@ -1,0 +1,152 @@
+// supabase/functions/execute-research/index.ts
+
+import { createClient } from 'https://esm.sh/@supabase/supabase-js@2'
+import { corsHeaders } from '../_shared/cors.ts'
+
+Deno.serve(async (req) => {
+  // Handle CORS preflight requests
+  if (req.method === 'OPTIONS') {
+    return new Response('ok', { headers: corsHeaders })
+  }
+
+  try {
+    // Parse the request body
+    const { report_id } = await req.json()
+    
+    // Validate required input
+    if (!report_id) {
+      return new Response(JSON.stringify({ error: "Missing 'report_id' in request body" }), {
+        headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+        status: 400,
+      })
+    }
+
+    // Create a Supabase admin client
+    const supabaseAdminClient = createClient(
+      Deno.env.get('SUPABASE_URL') ?? '',
+      Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? ''
+    )
+
+    // Step A: Fetch the Brief
+    console.log(`Step A: Fetching report with ID: ${report_id}`)
+    const { data: reportData, error: fetchError } = await supabaseAdminClient
+      .from('reports')
+      .select('research_brief, project_id, report_type')
+      .eq('id', report_id)
+      .single()
+
+    if (fetchError) {
+      throw new Error(`Failed to fetch report: ${fetchError.message}`)
+    }
+
+    if (!reportData.research_brief) {
+      throw new Error('Report does not have a research_brief')
+    }
+
+    console.log('Step A completed: Research brief fetched successfully')
+
+    // Step B: Generate the Plan
+    console.log('Step B: Generating research plan')
+    const planResponse = await supabaseAdminClient.functions.invoke('generate-research-plan', {
+      body: { research_brief: reportData.research_brief }
+    })
+
+    if (planResponse.error) {
+      throw new Error(`Failed to generate research plan: ${planResponse.error.message}`)
+    }
+
+    const { research_plan } = planResponse.data
+    
+    if (!Array.isArray(research_plan) || research_plan.length === 0) {
+      throw new Error('Invalid or empty research plan received')
+    }
+
+    console.log(`Step B completed: Generated ${research_plan.length} research tasks`)
+
+    // Step C: Execute Tasks in Parallel
+    console.log('Step C: Executing atomic research tasks in parallel')
+    const atomicTaskPromises = research_plan.map(async (question: string, index: number) => {
+      console.log(`Starting atomic task ${index + 1}: ${question.substring(0, 100)}...`)
+      
+      const taskResponse = await supabaseAdminClient.functions.invoke('execute-atomic-task', {
+        body: { question }
+      })
+
+      if (taskResponse.error) {
+        console.error(`Task ${index + 1} failed:`, taskResponse.error)
+        throw new Error(`Atomic task ${index + 1} failed: ${taskResponse.error.message}`)
+      }
+
+      console.log(`Completed atomic task ${index + 1}`)
+      return taskResponse.data
+    })
+
+    // Wait for all tasks to complete
+    const atomicResults = await Promise.all(atomicTaskPromises)
+    console.log(`Step C completed: All ${atomicResults.length} atomic tasks finished`)
+
+    // Step D: Combine the Results
+    console.log('Step D: Combining research results')
+    const combinedReportTexts = atomicResults.map((result, index) => {
+      const reportText = result.report_text || ''
+      return `## Research Task ${index + 1}: ${research_plan[index]}\n\n${reportText}`
+    })
+
+    const finalReport = combinedReportTexts.join('\n\n---\n\n')
+    console.log(`Step D completed: Combined ${combinedReportTexts.length} reports into final document`)
+
+    // Step E: Save the Final Report
+    console.log('Step E: Saving final report to database')
+    const { data: updatedReport, error: updateError } = await supabaseAdminClient
+      .from('reports')
+      .update({
+        final_report: finalReport,
+        status: 'complete'
+      })
+      .eq('id', report_id)
+      .select('*')
+      .single()
+
+    if (updateError) {
+      throw new Error(`Failed to update report: ${updateError.message}`)
+    }
+
+    console.log('Step E completed: Final report saved successfully')
+
+    // Step F: Return the Result
+    console.log('Step F: Returning final report')
+    return new Response(JSON.stringify(updatedReport), {
+      headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+      status: 200,
+    })
+
+  } catch (error) {
+    console.error('Error in execute-research orchestrator:', error)
+    
+    // Try to update the report status to 'error' if we have a report_id
+    try {
+      const { report_id } = await req.json()
+      if (report_id) {
+        const supabaseAdminClient = createClient(
+          Deno.env.get('SUPABASE_URL') ?? '',
+          Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? ''
+        )
+        
+        await supabaseAdminClient
+          .from('reports')
+          .update({ status: 'error' })
+          .eq('id', report_id)
+      }
+    } catch (updateError) {
+      console.error('Failed to update report status to error:', updateError)
+    }
+    
+    // Return appropriate error response
+    const statusCode = error.message.includes('Missing') ? 400 : 500
+    
+    return new Response(JSON.stringify({ error: error.message }), {
+      headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+      status: statusCode,
+    })
+  }
+})
