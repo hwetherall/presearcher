@@ -2,15 +2,22 @@
 
 import { corsHeaders } from '../_shared/cors.ts'
 
-const RESEARCH_PLANNER_META_PROMPT = `You are a Research Planner AI. Your only job is to read the following detailed research brief and break it down into a list of 5-7 specific, self-contained, and actionable research questions or tasks.
+const RESEARCH_PLANNER_META_PROMPT = `You are a Research Planner AI. Your only job is to read the following comprehensive inputs and break them down into a list of 5-7 specific, self-contained, and actionable research tasks.
 
-Each task must be a clear instruction that could be given to a junior analyst to execute as a standalone research project.
+Each task must be a clear instruction that could be given to a junior analyst to execute as a standalone research project using a tool like Perplexity Pro. The tasks should be designed to gather the specific evidence needed to write the chapter described in the Chapter Prompt.
 
 You MUST respond with ONLY a valid JSON object. The JSON object should have a single key, "research_plan", which contains an array of strings. Do not include any other text, explanations, or markdown formatting in your response.
 
-Here is the research brief:
----
-{research_brief}
+Here are the inputs:
+
+--- [CHAPTER PROMPT] ---
+{chapter_prompt}
+
+--- [PROJECT CONTEXT] ---
+{project_context}
+
+--- [DOCUMENTS SUMMARY] ---
+{documents_summary}
 ---`
 
 Deno.serve(async (req) => {
@@ -21,18 +28,35 @@ Deno.serve(async (req) => {
 
   try {
     // Parse the request body
-    const { research_brief } = await req.json()
+    const { project_context, documents_summary, chapter_prompt } = await req.json()
     
-    // Validate required input
-    if (!research_brief) {
-      return new Response(JSON.stringify({ error: "Missing 'research_brief' in request body" }), {
+    // Validate required inputs
+    if (!project_context) {
+      return new Response(JSON.stringify({ error: "Missing 'project_context' in request body" }), {
+        headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+        status: 400,
+      })
+    }
+    
+    if (!documents_summary) {
+      return new Response(JSON.stringify({ error: "Missing 'documents_summary' in request body" }), {
+        headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+        status: 400,
+      })
+    }
+    
+    if (!chapter_prompt) {
+      return new Response(JSON.stringify({ error: "Missing 'chapter_prompt' in request body" }), {
         headers: { ...corsHeaders, 'Content-Type': 'application/json' },
         status: 400,
       })
     }
 
-    // Construct the full prompt by replacing the placeholder
-    const fullPrompt = RESEARCH_PLANNER_META_PROMPT.replace('{research_brief}', research_brief)
+    // Construct the full prompt by replacing the placeholders
+    const fullPrompt = RESEARCH_PLANNER_META_PROMPT
+      .replace('{chapter_prompt}', chapter_prompt)
+      .replace('{project_context}', project_context)
+      .replace('{documents_summary}', documents_summary)
 
     // Get OpenRouter API key from environment
     const openRouterApiKey = Deno.env.get('OPENROUTER_API_KEY')

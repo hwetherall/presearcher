@@ -42,12 +42,32 @@ async function runOrchestration(report_id: string) {
       throw new Error('Report does not have a research_brief')
     }
 
-    console.log('Step A completed: Research brief fetched successfully')
+    // Fetch the project data needed for the enhanced research plan generation
+    console.log(`Step A: Fetching project data for project ID: ${reportData.project_id}`)
+    const { data: projectData, error: projectError } = await supabaseAdminClient
+      .from('projects')
+      .select('project_context, key_documents_summary, chapter_template_prompt')
+      .eq('id', reportData.project_id)
+      .single()
+
+    if (projectError) {
+      throw new Error(`Failed to fetch project data: ${projectError.message}`)
+    }
+
+    if (!projectData.project_context || !projectData.key_documents_summary || !projectData.chapter_template_prompt) {
+      throw new Error('Project is missing required data (project_context, key_documents_summary, or chapter_template_prompt)')
+    }
+
+    console.log('Step A completed: Research brief and project data fetched successfully')
 
     // Step B: Generate the Plan
     console.log('Step B: Generating research plan')
     const planResponse = await supabaseAdminClient.functions.invoke('generate-research-plan', {
-      body: { research_brief: reportData.research_brief }
+      body: {
+        project_context: projectData.project_context,
+        documents_summary: projectData.key_documents_summary,
+        chapter_prompt: projectData.chapter_template_prompt
+      }
     })
 
     if (planResponse.error) {
