@@ -3,6 +3,21 @@
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2'
 import { corsHeaders } from '../_shared/cors.ts'
 
+const SYNTHESIZER_META_PROMPT = `You are a Senior Partner at a top-tier strategy consulting firm, renowned for your ability to synthesize complex information into clear, decision-grade reports. You have been given a collection of raw research findings from your junior analyst team.
+
+Your task is to read all the provided raw data and transform it into a single, cohesive, client-ready "Market Research Pack."
+
+You must adhere to the following structure and principles:
+1.  **Executive Summary:** Begin with a concise, powerful "Executive Summary" section that synthesizes the most critical, overarching findings from the entire document.
+2.  **Cohesive Narrative:** Weave the individual research sections together into a smooth, logical narrative. Do not simply list the sections; ensure they flow together.
+3.  **Professional Formatting:** Use clear Markdown formatting, including headers, sub-headers, bold text for key terms, and tables for comparative data.
+4.  **Synthesize, Do Not Invent:** You MUST only use the information present in the "Raw Research Data" provided below. Do not introduce any outside knowledge or facts. Your job is to synthesize, not to conduct new research.
+
+Here is the raw data from your team:
+---
+{raw_data}
+---`
+
 Deno.serve(async (req) => {
   // Handle CORS preflight requests
   if (req.method === 'OPTIONS') {
@@ -92,11 +107,50 @@ Deno.serve(async (req) => {
       return `## Research Task ${index + 1}: ${research_plan[index]}\n\n${reportText}`
     })
 
-    const finalReport = combinedReportTexts.join('\n\n---\n\n')
-    console.log(`Step D completed: Combined ${combinedReportTexts.length} reports into final document`)
+    const rawData = combinedReportTexts.join('\n\n---\n\n')
+    console.log(`Step D completed: Combined ${combinedReportTexts.length} reports into raw data`)
+
+    // Step D.5: Synthesize the Raw Data into Professional Report
+    console.log('Step D.5: Synthesizing raw data into professional report')
+    
+    // Get OpenRouter API key from environment
+    const openRouterApiKey = Deno.env.get('OPENROUTER_API_KEY')
+    if (!openRouterApiKey) {
+      throw new Error('SERVER ERROR: OPENROUTER_API_KEY was not found in the environment.')
+    }
+
+    // Construct the synthesis prompt
+    const synthesisPrompt = SYNTHESIZER_META_PROMPT.replace('{raw_data}', rawData)
+
+    // Call OpenRouter for synthesis using large-context model
+    const synthesisResponse = await fetch("https://openrouter.ai/api/v1/chat/completions", {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${openRouterApiKey}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        model: "google/gemini-2.5-flash",
+        messages: [{ role: "user", content: synthesisPrompt }],
+      }),
+    })
+
+    if (!synthesisResponse.ok) {
+      const errorBody = await synthesisResponse.text()
+      throw new Error(`Synthesis API request failed: ${synthesisResponse.status} ${synthesisResponse.statusText} - ${errorBody}`)
+    }
+
+    const synthesisAiResponse = await synthesisResponse.json()
+    const finalReport = synthesisAiResponse.choices[0].message.content
+
+    if (!finalReport) {
+      throw new Error('No synthesized content received from AI model')
+    }
+
+    console.log('Step D.5 completed: Raw data synthesized into professional report')
 
     // Step E: Save the Final Report
-    console.log('Step E: Saving final report to database')
+    console.log('Step E: Saving synthesized final report to database')
     const { data: updatedReport, error: updateError } = await supabaseAdminClient
       .from('reports')
       .update({
@@ -111,7 +165,7 @@ Deno.serve(async (req) => {
       throw new Error(`Failed to update report: ${updateError.message}`)
     }
 
-    console.log('Step E completed: Final report saved successfully')
+    console.log('Step E completed: Synthesized final report saved successfully')
 
     // Step F: Return the Result
     console.log('Step F: Returning final report')
