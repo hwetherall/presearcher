@@ -344,9 +344,3 @@ entrypoint = "./functions/execute-research/index.ts"
 # Specifies static files to be bundled with the function. Supports glob patterns.
 # For example, if you want to serve static HTML pages in your function:
 # static_files = [ "./functions/execute-research/*.html" ]
-# Set a custom timeout for our long-running research orchestrator (in seconds)
-timeout = 360 # 6 minutes
-
-# Set a custom timeout for our long-running atomic task function (in seconds)
-[functions.execute-atomic-task]
-timeout = 300 # 5 minutes
