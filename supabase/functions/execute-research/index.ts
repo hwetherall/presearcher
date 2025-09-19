@@ -46,7 +46,11 @@ async function runOrchestration(report_id: string) {
     console.log(`Step A: Fetching project data for project ID: ${reportData.project_id}`)
     const { data: projectData, error: projectError } = await supabaseAdminClient
       .from('projects')
-      .select('project_context, key_documents_summary, chapter_template_prompt')
+      .select(`
+        project_context,
+        key_documents_summary,
+        chapter_templates ( chapter_prompt )
+      `)
       .eq('id', reportData.project_id)
       .single()
 
@@ -54,8 +58,8 @@ async function runOrchestration(report_id: string) {
       throw new Error(`Failed to fetch project data: ${projectError.message}`)
     }
 
-    if (!projectData.project_context || !projectData.key_documents_summary || !projectData.chapter_template_prompt) {
-      throw new Error('Project is missing required data (project_context, key_documents_summary, or chapter_template_prompt)')
+    if (!projectData.project_context || !projectData.key_documents_summary || !projectData.chapter_templates?.chapter_prompt) {
+      throw new Error('Project is missing required data (project_context, key_documents_summary, or chapter_prompt from template)')
     }
 
     console.log('Step A completed: Research brief and project data fetched successfully')
@@ -66,7 +70,7 @@ async function runOrchestration(report_id: string) {
       body: {
         project_context: projectData.project_context,
         documents_summary: projectData.key_documents_summary,
-        chapter_prompt: projectData.chapter_template_prompt
+        chapter_prompt: projectData.chapter_templates.chapter_prompt
       }
     })
 

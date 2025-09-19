@@ -7,25 +7,10 @@ import ReportDisplay from '@/components/ReportDisplay'
 import BriefReviewModal from '@/components/BriefReviewModal'
 import { Upload, Sparkles, Search, ArrowRight, FileText, AlertCircle } from 'lucide-react'
 
-const chapterTemplates = [
-  { 
-    id: 'competitive_analysis', 
-    name: 'Competitive Analysis',
-    prompt: 'Conduct a comprehensive competitive analysis including market positioning, key players, product comparisons, pricing strategies, and competitive advantages. Focus on direct and indirect competitors, market share data, and strategic differentiation points.'
-  },
-  { 
-    id: 'market_sizing', 
-    name: 'Market Sizing',
-    prompt: 'Perform detailed market sizing analysis including TAM, SAM, and SOM calculations. Include growth rates, market segments, geographical distribution, and key market drivers. Provide specific numbers and data sources where available.'
-  },
-  { 
-    id: 'product_and_technology', 
-    name: 'Product and Technology',
-    prompt: 'Evaluate the technology landscape including current state assessment, emerging technologies, technical feasibility, implementation challenges, and future roadmap considerations. Include vendor analysis and technology stack recommendations.'
-  },
-]
-
 export default function ResearchCopilot() {
+  // Chapter Templates State
+  const [templates, setTemplates] = useState<{ id: string; name: string; }[]>([])
+
   // Stage 1: Foundation Report State
   const [projectContext, setProjectContext] = useState('')
   const [chapterTemplate, setChapterTemplate] = useState('')
@@ -54,6 +39,31 @@ export default function ResearchCopilot() {
   const foundationPollingRef = useRef<NodeJS.Timeout | null>(null)
   const gapPollingRef = useRef<NodeJS.Timeout | null>(null)
 
+  // Fetch chapter templates on component mount
+  useEffect(() => {
+    const fetchTemplates = async () => {
+      try {
+        const { data, error } = await supabase
+          .from('chapter_templates')
+          .select('id, name')
+          .order('name')
+
+        if (error) {
+          console.error('Error fetching chapter templates:', error)
+          setError('Failed to load chapter templates')
+          return
+        }
+
+        setTemplates(data || [])
+      } catch (err) {
+        console.error('Error fetching chapter templates:', err)
+        setError('Failed to load chapter templates')
+      }
+    }
+
+    fetchTemplates()
+  }, [])
+
   // Cleanup polling intervals on component unmount
   useEffect(() => {
     return () => {
@@ -72,9 +82,8 @@ export default function ResearchCopilot() {
       setError(null)
       setIsLoadingBrief(true)
 
-      // Find the selected template prompt
-      const selectedTemplate = chapterTemplates.find(t => t.id === chapterTemplate)
-      if (!selectedTemplate) {
+      // Validate that a template is selected
+      if (!chapterTemplate) {
         throw new Error('Please select a chapter template')
       }
 
@@ -83,7 +92,8 @@ export default function ResearchCopilot() {
         .from('projects')
         .insert({
           name: `Research Project ${new Date().toISOString()}`,
-          chapter_template_prompt: selectedTemplate.prompt,
+          // chapter_template_prompt: selectedTemplate.prompt, // Commented out - will be handled by backend
+          chapter_template_id: chapterTemplate, // Save the selected template ID
           project_context: projectContext,
           key_documents_summary: docsSummary,
         })
@@ -359,7 +369,7 @@ FOCUS ON companies that provide actionable, integrated talent insights to help e
                   className="w-full px-4 py-3 bg-zinc-800 border border-zinc-700 rounded-lg text-zinc-100 focus:outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500"
                 >
                   <option value="" className="text-zinc-500">Select a chapter..</option>
-                  {chapterTemplates.map(template => (
+                  {templates.map(template => (
                     <option key={template.id} value={template.id}>
                       {template.name}
                     </option>
@@ -454,12 +464,12 @@ External Labor Market Intelligence: Specifies the integration with a proprietary
                        console.log('Testing foundation workflow...')
                        
                        // Create a test project first
-                       const selectedTemplate = chapterTemplates.find(t => t.id === chapterTemplate)
                        const { data: projectData, error: projectError } = await supabase
                          .from('projects')
                          .insert({
                            name: `Test Project ${new Date().toISOString()}`,
-                           chapter_template_prompt: selectedTemplate!.prompt,
+                           // chapter_template_prompt: selectedTemplate!.prompt, // Commented out - will be handled by backend
+                           chapter_template_id: chapterTemplate, // Save the selected template ID
                            project_context: projectContext,
                            key_documents_summary: docsSummary,
                          })
@@ -549,12 +559,12 @@ External Labor Market Intelligence: Specifies the integration with a proprietary
                        console.log('Testing foundation workflow...')
                        
                        // Create a test project first
-                       const selectedTemplate = chapterTemplates.find(t => t.id === chapterTemplate)
                        const { data: projectData, error: projectError } = await supabase
                          .from('projects')
                          .insert({
                            name: `Test Project ${new Date().toISOString()}`,
-                           chapter_template_prompt: selectedTemplate!.prompt,
+                           // chapter_template_prompt: selectedTemplate!.prompt, // Commented out - will be handled by backend
+                           chapter_template_id: chapterTemplate, // Save the selected template ID
                            project_context: projectContext,
                            key_documents_summary: docsSummary,
                          })
