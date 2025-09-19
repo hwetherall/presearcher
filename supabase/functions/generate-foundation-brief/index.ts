@@ -55,11 +55,15 @@ Deno.serve(async (req) => {
       Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? ''
     )
 
-    // Fetch project data
+    // Fetch project data with chapter template via join
     console.log('Fetching project data from database...')
     const { data: projectData, error: projectError } = await supabaseAdminClient
       .from('projects')
-      .select('chapter_template_prompt, project_context, key_documents_summary')
+      .select(`
+        project_context,
+        key_documents_summary,
+        chapter_templates ( chapter_prompt )
+      `)
       .eq('id', project_id)
       .single()
 
@@ -75,7 +79,7 @@ Deno.serve(async (req) => {
 
     // Construct the full prompt
     let fullPrompt = FOUNDATION_META_PROMPT
-    fullPrompt = fullPrompt.replace('{Chapter_Template_Prompt}', projectData.chapter_template_prompt)
+    fullPrompt = fullPrompt.replace('{Chapter_Template_Prompt}', projectData.chapter_templates?.chapter_prompt || 'No chapter template provided.')
     fullPrompt = fullPrompt.replace('{Project_Context}', projectData.project_context)
     fullPrompt = fullPrompt.replace('{Key_Documents_Summary}', projectData.key_documents_summary || 'No documents provided.')
 
@@ -99,8 +103,8 @@ Deno.serve(async (req) => {
         'Content-Type': 'application/json',
       },
       body: JSON.stringify({
-        // CORRECTED MODEL NAME: Using the official ID for Gemini 1.5 Pro on OpenRouter
-        model: "google/gemini-2.5-pro",
+        // CORRECTED MODEL NAME: Using the official ID for Gemini 2.5 Pro on OpenRouter
+        model: "google/gemini-2.5-flash",
         messages: [{ role: "user", content: fullPrompt }],
       }),
     })
