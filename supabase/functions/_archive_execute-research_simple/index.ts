@@ -10,14 +10,22 @@ Deno.serve(async (req) => {
   }
 
   try {
-    // Step 1: Get the report_id from the request. This tells us which brief to execute.
-    const { report_id } = await req.json()
+    console.log('Execute research function started')
+    
+    // Step 1: Get the report_id and model from the request
+    const { report_id, model } = await req.json()
+    console.log('Received parameters:', { report_id, model })
+    
     if (!report_id) {
       return new Response(JSON.stringify({ error: "Missing 'report_id' in request body" }), {
         headers: { ...corsHeaders, 'Content-Type': 'application/json' },
         status: 400,
       })
     }
+    
+    // Use the provided model or default to alibaba/tongyi-deepresearch-30b-a3b
+    const selectedModel = model || 'alibaba/tongyi-deepresearch-30b-a3b'
+    console.log('Using model:', selectedModel)
 
     const supabaseAdminClient = createClient(
       Deno.env.get('SUPABASE_URL') ?? '',
@@ -25,16 +33,22 @@ Deno.serve(async (req) => {
     )
 
     // Step 2: Fetch the research brief from the 'reports' table.
+    console.log('Fetching research brief from database...')
     const { data: reportData, error: fetchError } = await supabaseAdminClient
       .from('reports')
       .select('research_brief')
       .eq('id', report_id)
       .single()
 
-    if (fetchError) throw fetchError
+    if (fetchError) {
+      console.error('Database fetch error:', fetchError)
+      throw fetchError
+    }
     if (!reportData || !reportData.research_brief) {
+      console.error('No report data or brief found for ID:', report_id)
       throw new Error('Report not found or research brief is empty.')
     }
+    console.log('Research brief fetched successfully, length:', reportData.research_brief.length)
 
     // Step 3: (Optional but good practice) Update the report status to "in_progress".
     await supabaseAdminClient
@@ -43,7 +57,6 @@ Deno.serve(async (req) => {
       .eq('id', report_id)
 
     // Step 4: Send the brief to a specialized research model via OpenRouter.
-    // We'll use a Perplexity model here, as discussed in the project plan.
     const openRouterApiKey = Deno.env.get('OPENROUTER_API_KEY')
     const res = await fetch("https://openrouter.ai/api/v1/chat/completions", {
       method: 'POST',
@@ -52,7 +65,7 @@ Deno.serve(async (req) => {
         'Content-Type': 'application/json',
       },
       body: JSON.stringify({
-        model: "alibaba/tongyi-deepresearch-30b-a3b", // A powerful, web-connected model for research
+        model: selectedModel, // Use the model selected by the user
         messages: [{ role: "user", content: reportData.research_brief }],
       }),
     })
@@ -82,8 +95,16 @@ Deno.serve(async (req) => {
     })
 
   } catch (error) {
-    // If anything goes wrong, return an error.
-    return new Response(JSON.stringify({ error: error.message }), {
+    // Enhanced error logging
+    console.error('Execute research error details:', {
+      message: error.message,
+      stack: error.stack,
+      name: error.name
+    })
+    return new Response(JSON.stringify({ 
+      error: error.message,
+      details: error.stack 
+    }), {
       headers: { ...corsHeaders, 'Content-Type': 'application/json' },
       status: 500,
     })

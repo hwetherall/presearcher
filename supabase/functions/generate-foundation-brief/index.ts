@@ -38,7 +38,10 @@ Deno.serve(async (req) => {
   }
 
   try {
+    console.log('Function started, parsing request body...')
     const { project_id } = await req.json()
+    console.log('Received project_id:', project_id)
+    
     if (!project_id) {
       return new Response(JSON.stringify({ error: "Missing 'project_id' in request body" }), {
         headers: { ...corsHeaders, 'Content-Type': 'application/json' },
@@ -53,14 +56,22 @@ Deno.serve(async (req) => {
     )
 
     // Fetch project data
+    console.log('Fetching project data from database...')
     const { data: projectData, error: projectError } = await supabaseAdminClient
       .from('projects')
       .select('chapter_template_prompt, project_context, key_documents_summary')
       .eq('id', project_id)
       .single()
 
-    if (projectError) throw projectError
-    if (!projectData) throw new Error('Project not found.')
+    if (projectError) {
+      console.error('Project fetch error:', projectError)
+      throw projectError
+    }
+    if (!projectData) {
+      console.error('No project data found for ID:', project_id)
+      throw new Error('Project not found.')
+    }
+    console.log('Project data fetched successfully')
 
     // Construct the full prompt
     let fullPrompt = FOUNDATION_META_PROMPT
@@ -123,7 +134,15 @@ Deno.serve(async (req) => {
     })
 
   } catch (error) {
-    return new Response(JSON.stringify({ error: error.message }), {
+    console.error('Function error details:', {
+      message: error.message,
+      stack: error.stack,
+      name: error.name
+    })
+    return new Response(JSON.stringify({ 
+      error: error.message,
+      details: error.stack 
+    }), {
       headers: { ...corsHeaders, 'Content-Type': 'application/json' },
       status: 500,
     })

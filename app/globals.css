@@ -1,0 +1,32 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    --background: 240 10% 3.9%;
+    --foreground: 0 0% 98%;
+  }
+}
+
+body {
+  @apply bg-zinc-950 text-zinc-100;
+}
+
+/* Custom scrollbar for dark theme */
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+
+::-webkit-scrollbar-track {
+  @apply bg-zinc-900;
+}
+
+::-webkit-scrollbar-thumb {
+  @apply bg-zinc-700 rounded-lg;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  @apply bg-zinc-600;
+}
