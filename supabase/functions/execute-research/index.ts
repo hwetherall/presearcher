@@ -177,9 +177,8 @@ Deno.serve(async (req) => {
   } catch (error) {
     console.error('Error in execute-research orchestrator:', error)
     
-    // Try to update the report status to 'error' if we have a report_id
+    // The report_id is already defined in the outer scope
     try {
-      const { report_id } = await req.json()
       if (report_id) {
         const supabaseAdminClient = createClient(
           Deno.env.get('SUPABASE_URL') ?? '',
