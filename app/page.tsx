@@ -10,6 +10,10 @@ import { Upload, Sparkles, Search, ArrowRight, FileText, AlertCircle } from 'luc
 export default function ResearchCopilot() {
   // Chapter Templates State
   const [templates, setTemplates] = useState<{ id: string; name: string; }[]>([])
+  
+  // Project Loading State
+  const [existingProjects, setExistingProjects] = useState<any[]>([])
+  const [showProjectLoader, setShowProjectLoader] = useState(false)
 
   // Stage 1: Foundation Report State
   const [projectContext, setProjectContext] = useState('')
@@ -63,6 +67,84 @@ export default function ResearchCopilot() {
 
     fetchTemplates()
   }, [])
+
+  // Load existing projects
+  const loadExistingProjects = async () => {
+    try {
+      const { data, error } = await supabase
+        .from('projects')
+        .select(`
+          id, 
+          name, 
+          created_at,
+          reports (
+            id,
+            status,
+            report_type,
+            created_at,
+            final_report
+          )
+        `)
+        .order('created_at', { ascending: false })
+        .limit(10)
+      
+      if (error) throw error
+      setExistingProjects(data || [])
+      setShowProjectLoader(true)
+    } catch (err) {
+      console.error('Error loading projects:', err)
+      setError('Failed to load existing projects')
+    }
+  }
+
+  // Load existing project data
+  const loadProject = async (projectId: string, reportId?: string) => {
+    try {
+      setError(null)
+      
+      // Load project data
+      const { data: projectData, error: projectError } = await supabase
+        .from('projects')
+        .select('*')
+        .eq('id', projectId)
+        .single()
+      
+      if (projectError) throw projectError
+      
+      // Populate form fields
+      setProjectContext(projectData.project_context || '')
+      setDocsSummary(projectData.key_documents_summary || '')
+      setChapterTemplate(projectData.chapter_template_id || '')
+      
+      // If there's a specific report, load it
+      if (reportId) {
+        const { data: reportData, error: reportError } = await supabase
+          .from('reports')
+          .select('*')
+          .eq('id', reportId)
+          .single()
+        
+        if (reportError) throw reportError
+        
+        setCurrentReportId(reportId)
+        setFoundationBrief(reportData.research_brief || '')
+        setFoundationReport(reportData.final_report || '')
+        
+        // If report is complete, show it
+        if (reportData.status === 'complete' && reportData.final_report) {
+          setFoundationReport(reportData.final_report)
+        } else if (reportData.status === 'pending' && reportData.research_brief) {
+          // If report is pending but has a brief, allow user to continue
+          setShowBriefModal(true)
+        }
+      }
+      
+      setShowProjectLoader(false)
+    } catch (err) {
+      console.error('Error loading project:', err)
+      setError('Failed to load project data')
+    }
+  }
 
   // Cleanup polling intervals on component unmount
   useEffect(() => {
@@ -289,6 +371,15 @@ export default function ResearchCopilot() {
                 <p className="text-sm text-zinc-400">AI-powered two-stage research workflow</p>
               </div>
             </div>
+            
+            {/* Load Existing Project Button */}
+            <button
+              onClick={loadExistingProjects}
+              className="px-4 py-2 bg-blue-600 hover:bg-blue-500 text-white rounded-lg transition-colors duration-200 flex items-center gap-2"
+            >
+              <FileText className="w-4 h-4" />
+              Load Project
+            </button>
           </div>
         </div>
       </header>
@@ -722,6 +813,76 @@ External Labor Market Intelligence: Specifies the integration with a proprietary
         onCancel={() => setShowGapBriefModal(false)}
         isExecuting={isLoadingGapReport}
       />
+
+      {/* Project Loader Modal */}
+      {showProjectLoader && (
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
+          <div className="bg-zinc-800 rounded-lg p-6 max-w-4xl w-full mx-4 max-h-[80vh] overflow-y-auto">
+            <div className="flex justify-between items-center mb-4">
+              <h2 className="text-xl font-bold text-white">Load Existing Project</h2>
+              <button
+                onClick={() => setShowProjectLoader(false)}
+                className="text-gray-400 hover:text-white"
+              >
+                ✕
+              </button>
+            </div>
+            
+            <div className="space-y-3">
+              {existingProjects.length === 0 ? (
+                <p className="text-gray-400">No existing projects found.</p>
+              ) : (
+                existingProjects.map((project) => (
+                  <div key={project.id} className="bg-zinc-700 rounded-lg p-4">
+                    <div className="flex justify-between items-start mb-2">
+                      <div>
+                        <h3 className="font-semibold text-white">{project.name}</h3>
+                        <p className="text-sm text-gray-400">
+                          Created: {new Date(project.created_at).toLocaleDateString()}
+                        </p>
+                      </div>
+                      <button
+                        onClick={() => loadProject(project.id)}
+                        className="px-3 py-1 bg-blue-600 hover:bg-blue-500 text-white rounded text-sm"
+                      >
+                        Load Project
+                      </button>
+                    </div>
+                    
+                    {project.reports && project.reports.length > 0 && (
+                      <div className="mt-3">
+                        <p className="text-sm text-gray-300 mb-2">Reports:</p>
+                        <div className="space-y-1">
+                          {project.reports.map((report: any) => (
+                            <div key={report.id} className="flex justify-between items-center bg-zinc-600 rounded p-2">
+                              <div>
+                                <span className="text-sm text-white capitalize">{report.report_type}</span>
+                                <span className={`ml-2 px-2 py-1 rounded text-xs ${
+                                  report.status === 'complete' ? 'bg-green-600 text-white' :
+                                  report.status === 'pending' ? 'bg-yellow-600 text-white' :
+                                  'bg-red-600 text-white'
+                                }`}>
+                                  {report.status}
+                                </span>
+                              </div>
+                              <button
+                                onClick={() => loadProject(project.id, report.id)}
+                                className="px-2 py-1 bg-green-600 hover:bg-green-500 text-white rounded text-xs"
+                              >
+                                Load Report
+                              </button>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                ))
+              )}
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   )
 }

@@ -344,3 +344,8 @@ entrypoint = "./functions/execute-research/index.ts"
 # Specifies static files to be bundled with the function. Supports glob patterns.
 # For example, if you want to serve static HTML pages in your function:
 # static_files = [ "./functions/execute-research/*.html" ]
+
+[functions.research-worker]
+enabled = true
+verify_jwt = false  # Cron jobs don't need JWT verification
+entrypoint = "./functions/research-worker/index.ts"

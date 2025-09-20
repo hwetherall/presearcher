@@ -27,32 +27,68 @@ Deno.serve(async (req) => {
       throw new Error('SERVER ERROR: OPENROUTER_API_KEY was not found in the environment.')
     }
 
-    // Make direct API call to OpenRouter with Perplexity model
-    const res = await fetch("https://openrouter.ai/api/v1/chat/completions", {
-      method: 'POST',
-      headers: {
-        'Authorization': `Bearer ${openRouterApiKey}`,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
-        model: "perplexity/sonar-deep-research",
-        messages: [{ role: "user", content: question }],
-      }),
-    })
+    // Helper function to make API call with timeout
+    const makeApiCall = async (model: string, timeout: number) => {
+      const controller = new AbortController()
+      const timeoutId = setTimeout(() => controller.abort(), timeout)
+      
+      try {
+        console.log(`Attempting research with model: ${model}`)
+        const res = await fetch("https://openrouter.ai/api/v1/chat/completions", {
+          method: 'POST',
+          headers: {
+            'Authorization': `Bearer ${openRouterApiKey}`,
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({
+            model: model,
+            messages: [{ role: "user", content: question }],
+          }),
+          signal: controller.signal
+        })
 
-    if (!res.ok) {
-      const errorBody = await res.text()
-      throw new Error(`OpenRouter API request failed: ${res.status} ${res.statusText} - ${errorBody}`)
+        clearTimeout(timeoutId)
+
+        if (!res.ok) {
+          const errorBody = await res.text()
+          throw new Error(`OpenRouter API request failed: ${res.status} ${res.statusText} - ${errorBody}`)
+        }
+
+        const aiResponse = await res.json()
+        const reportText = aiResponse.choices[0].message.content
+
+        if (!reportText) {
+          throw new Error('No content received from AI model')
+        }
+
+        console.log(`Successfully completed research with model: ${model}`)
+        return reportText
+      } catch (error) {
+        clearTimeout(timeoutId)
+        throw error
+      }
     }
 
-    // Parse the AI response
-    const aiResponse = await res.json()
+    // Try deep research model first, then fallback to faster model
+    let reportText: string
     
-    // Extract the report text from the response
-    const reportText = aiResponse.choices[0].message.content
-
-    if (!reportText) {
-      throw new Error('No content received from AI model')
+    try {
+      // First attempt: Deep research model with 120 second timeout
+      reportText = await makeApiCall("perplexity/sonar-deep-research", 120000)
+    } catch (error) {
+      console.log(`Deep research model failed: ${error.message}`)
+      console.log('Falling back to faster research model...')
+      
+      try {
+        // Fallback: Faster research model with 60 second timeout
+        reportText = await makeApiCall("perplexity/sonar-pro", 60000)
+      } catch (fallbackError) {
+        console.log(`Fallback model also failed: ${fallbackError.message}`)
+        console.log('Trying final fallback to general model...')
+        
+        // Final fallback: General purpose model with shorter timeout
+        reportText = await makeApiCall("google/gemini-2.5-flash", 30000)
+      }
     }
 
     // Return success response with the report text
