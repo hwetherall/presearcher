@@ -2,9 +2,9 @@
 
 import React, { useState, useRef, useEffect } from 'react'
 import { supabase } from '@/lib/supabaseClient'
-import LoadingSpinner from '@/components/LoadingSpinner'
 import ReportDisplay from '@/components/ReportDisplay'
-import BriefReviewModal from '@/components/BriefReviewModal'
+// import BriefReviewModal from '@/components/BriefReviewModal' // No longer needed
+import JobStatusDisplay from '@/components/JobStatusDisplay';
 import { Upload, Sparkles, Search, ArrowRight, FileText, AlertCircle } from 'lucide-react'
 
 export default function ResearchCopilot() {
@@ -19,22 +19,21 @@ export default function ResearchCopilot() {
   const [projectContext, setProjectContext] = useState('')
   const [chapterTemplate, setChapterTemplate] = useState('')
   const [docsSummary, setDocsSummary] = useState('')
-  const [isLoadingBrief, setIsLoadingBrief] = useState(false)
   const [isLoadingReport, setIsLoadingReport] = useState(false)
-  const [foundationBrief, setFoundationBrief] = useState('')
   const [foundationReport, setFoundationReport] = useState('')
-  const [showBriefModal, setShowBriefModal] = useState(false)
-  const [selectedModel, setSelectedModel] = useState('perplexity/sonar-deep-research')
   const [currentReportId, setCurrentReportId] = useState<string | null>(null)
+  
+  // Task Review State
+  const [researchTasks, setResearchTasks] = useState<string[]>([])
+  const [showTaskReview, setShowTaskReview] = useState(false)
+  const [isGeneratingTasks, setIsGeneratingTasks] = useState(false)
 
   // Stage 2: Gap Analysis State
   const [firstDraftForGapAnalysis, setFirstDraftForGapAnalysis] = useState('')
-  const [isLoadingGapBrief, setIsLoadingGapBrief] = useState(false)
   const [isLoadingGapReport, setIsLoadingGapReport] = useState(false)
-  const [gapAnalysisBrief, setGapAnalysisBrief] = useState('')
   const [gapAnalysisReport, setGapAnalysisReport] = useState('')
-  const [showGapBriefModal, setShowGapBriefModal] = useState(false)
   const [gapReportId, setGapReportId] = useState<string | null>(null)
+  const [currentProjectId, setCurrentProjectId] = useState<string | null>(null)
 
   // Error state
   const [error, setError] = useState<string | null>(null)
@@ -111,7 +110,8 @@ export default function ResearchCopilot() {
       
       if (projectError) throw projectError
       
-      // Populate form fields
+      // Store project ID and populate form fields
+      setCurrentProjectId(projectId)
       setProjectContext(projectData.project_context || '')
       setDocsSummary(projectData.key_documents_summary || '')
       setChapterTemplate(projectData.chapter_template_id || '')
@@ -127,15 +127,16 @@ export default function ResearchCopilot() {
         if (reportError) throw reportError
         
         setCurrentReportId(reportId)
-        setFoundationBrief(reportData.research_brief || '')
         setFoundationReport(reportData.final_report || '')
         
         // If report is complete, show it
         if (reportData.status === 'complete' && reportData.final_report) {
           setFoundationReport(reportData.final_report)
-        } else if (reportData.status === 'pending' && reportData.research_brief) {
+        } else if (reportData.status === 'pending' || reportData.status === 'in_progress') {
           // If report is pending but has a brief, allow user to continue
-          setShowBriefModal(true)
+          // setShowBriefModal(true) // We will now handle this with a status component
+          setCurrentReportId(reportId);
+          pollForFoundationReport(reportId); // Start polling if we load an in-progress report
         }
       }
       
@@ -158,24 +159,57 @@ export default function ResearchCopilot() {
     }
   }, [])
 
-  // Generate Foundation Brief
-  const generateFoundationBrief = async () => {
+  const pollForFoundationReport = (reportId: string) => {
+    // Clear any existing polling interval
+    if (foundationPollingRef.current) {
+      clearInterval(foundationPollingRef.current)
+    }
+
+    foundationPollingRef.current = setInterval(async () => {
+      try {
+        const { data: reportData, error: queryError } = await supabase
+          .from('reports')
+          .select('status, final_report')
+          .eq('id', reportId)
+          .single()
+
+        if (queryError) {
+          console.error('Error polling for report status:', queryError)
+          return // Continue polling
+        }
+
+        if (reportData.status === 'complete') {
+          if (foundationPollingRef.current) clearInterval(foundationPollingRef.current)
+          setFoundationReport(reportData.final_report)
+          setIsLoadingReport(false)
+        } else if (reportData.status === 'error') {
+          if (foundationPollingRef.current) clearInterval(foundationPollingRef.current)
+          setError('The research process failed in the background.')
+          setIsLoadingReport(false)
+        }
+        // If status is 'pending' or 'in_progress', we just keep polling.
+        // A more advanced version could fetch job status for more detailed progress.
+
+      } catch (pollingError) {
+        console.error('Error during polling:', pollingError)
+      }
+    }, 5000) // Poll every 5 seconds
+  }
+
+  // Generate research tasks for review
+  const generateResearchTasks = async () => {
     try {
       setError(null)
-      setIsLoadingBrief(true)
+      setIsGeneratingTasks(true)
 
-      // Validate that a template is selected
-      if (!chapterTemplate) {
-        throw new Error('Please select a chapter template')
-      }
+      if (!chapterTemplate) throw new Error('Please select a chapter template')
 
-      // Create a new project
+      // 1. Create Project
       const { data: projectData, error: projectError } = await supabase
         .from('projects')
         .insert({
           name: `Research Project ${new Date().toISOString()}`,
-          // chapter_template_prompt: selectedTemplate.prompt, // Commented out - will be handled by backend
-          chapter_template_id: chapterTemplate, // Save the selected template ID
+          chapter_template_id: chapterTemplate,
           project_context: projectContext,
           key_documents_summary: docsSummary,
         })
@@ -184,179 +218,180 @@ export default function ResearchCopilot() {
 
       if (projectError) throw projectError
 
-      // Call the generate-foundation-brief function
-      const { data, error: functionError } = await supabase.functions.invoke('generate-foundation-brief', {
+      // Store the project ID for later use
+      setCurrentProjectId(projectData.id)
+
+      // 2. Generate Brief (which also creates the initial report record)
+      const { data: briefData, error: briefError } = await supabase.functions.invoke('generate-foundation-brief', {
         body: { project_id: projectData.id },
       })
 
-      if (functionError) throw functionError
-      if (!data?.report_id) throw new Error('No report ID returned')
+      if (briefError) throw briefError
+      const reportId = briefData?.report_id
+      if (!reportId) throw new Error('Failed to create a report record.')
+      
+      setCurrentReportId(reportId)
 
-      setCurrentReportId(data.report_id)
+      // 3. Generate research plan to show tasks for review
+      const { data: planData, error: planError } = await supabase.functions.invoke('generate-research-plan', {
+        body: {
+          project_context: projectContext,
+          documents_summary: docsSummary,
+          chapter_prompt: (await supabase.from('chapter_templates').select('chapter_prompt').eq('id', chapterTemplate).single()).data?.chapter_prompt
+        }
+      })
 
-      // Fetch the generated brief
-      const { data: reportData, error: reportError } = await supabase
-        .from('reports')
-        .select('research_brief')
-        .eq('id', data.report_id)
-        .single()
+      if (planError) throw planError
+      if (!planData?.research_plan) throw new Error('Failed to generate research plan')
 
-      if (reportError) throw reportError
-      if (!reportData?.research_brief) throw new Error('No research brief generated')
+      setResearchTasks(planData.research_plan)
+      setShowTaskReview(true)
 
-      setFoundationBrief(reportData.research_brief)
-      setShowBriefModal(true)
     } catch (err) {
-      console.error('Error generating foundation brief:', err)
-      setError(err instanceof Error ? err.message : 'Failed to generate foundation brief')
+      console.error('Error generating research tasks:', err)
+      setError(err instanceof Error ? err.message : 'Failed to generate research tasks')
     } finally {
-      setIsLoadingBrief(false)
+      setIsGeneratingTasks(false)
     }
   }
 
-  // Execute Foundation Research
-  const executeFoundationResearch = async () => {
+  // Execute research with approved tasks
+  const executeResearchWithTasks = async () => {
     try {
       setError(null)
       setIsLoadingReport(true)
-      setShowBriefModal(false)
+      setShowTaskReview(false)
 
       if (!currentReportId) throw new Error('No report ID available')
 
-      // Clear any existing polling interval
-      if (foundationPollingRef.current) {
-        clearInterval(foundationPollingRef.current)
-        foundationPollingRef.current = null
-      }
-
-      // Call the execute-research function (now returns 202 immediately)
-      const { data, error: functionError } = await supabase.functions.invoke('execute-research', {
+      // Queue the job for execution with custom research plan
+      const { error: executionError } = await supabase.functions.invoke('execute-research', {
         body: { 
           report_id: currentReportId,
-          model: selectedModel 
+          custom_research_plan: researchTasks.filter(task => task.trim()) // Remove empty tasks
         },
       })
 
-      if (functionError) throw functionError
-      
-      // The API now returns a success message, not the final report
-      console.log('Research process started:', data?.message)
+      if (executionError) throw executionError
 
       // Start polling for the result
-      foundationPollingRef.current = setInterval(async () => {
-        try {
-          const { data: reportData, error: queryError } = await supabase
-            .from('reports')
-            .select('status, final_report')
-            .eq('id', currentReportId)
-            .single()
-
-          if (queryError) {
-            console.error('Error polling for report status:', queryError)
-            return // Continue polling despite query error
-          }
-
-          if (reportData.status === 'complete') {
-            // Report is complete - stop polling and set the result
-            if (foundationPollingRef.current) {
-              clearInterval(foundationPollingRef.current)
-              foundationPollingRef.current = null
-            }
-            setFoundationReport(reportData.final_report)
-            setIsLoadingReport(false)
-          } else if (reportData.status === 'error') {
-            // Report failed - stop polling and show error
-            if (foundationPollingRef.current) {
-              clearInterval(foundationPollingRef.current)
-              foundationPollingRef.current = null
-            }
-            setError('The research process failed in the background. Please check the logs.')
-            setIsLoadingReport(false)
-            setShowBriefModal(true) // Reopen modal on error
-          }
-          // For any other status (pending, in_progress), continue polling
-        } catch (pollingError) {
-          console.error('Error during polling:', pollingError)
-          // Continue polling despite errors
-        }
-      }, 5000) // Poll every 5 seconds
+      pollForFoundationReport(currentReportId)
 
     } catch (err) {
-      console.error('Error starting research:', err)
-      setError(err instanceof Error ? err.message : 'Failed to start research process')
-      setShowBriefModal(true) // Reopen modal on error
+      console.error('Error executing research:', err)
+      setError(err instanceof Error ? err.message : 'Failed to execute research')
       setIsLoadingReport(false)
     }
   }
 
-  // Generate Gap Analysis Brief
-  const generateGapAnalysisBrief = async () => {
+  // Polling function for gap analysis report
+  const pollForGapAnalysisReport = (reportId: string) => {
+    // Clear any existing polling interval
+    if (gapPollingRef.current) {
+      clearInterval(gapPollingRef.current)
+    }
+
+    console.log(`Starting gap analysis polling for report ${reportId}`)
+    
+    const poll = async () => {
+      try {
+        const { data, error } = await supabase
+          .from('reports')
+          .select('status, final_report')
+          .eq('id', reportId)
+          .single()
+
+        if (error) {
+          console.error('Polling error:', error)
+          return
+        }
+
+        console.log(`Gap analysis report ${reportId} status:`, data.status)
+
+        if (data.status === 'complete' && data.final_report) {
+          // Report is complete
+          setGapAnalysisReport(data.final_report)
+          setIsLoadingGapReport(false)
+          
+          // Clear the polling interval
+          if (gapPollingRef.current) {
+            clearInterval(gapPollingRef.current)
+            gapPollingRef.current = null
+          }
+          
+          console.log('Gap analysis report completed and loaded')
+        } else if (data.status === 'error') {
+          // Report failed
+          setError('Gap analysis report generation failed')
+          setIsLoadingGapReport(false)
+          
+          // Clear the polling interval
+          if (gapPollingRef.current) {
+            clearInterval(gapPollingRef.current)
+            gapPollingRef.current = null
+          }
+        }
+        // Continue polling if status is still 'pending' or 'in_progress'
+      } catch (err) {
+        console.error('Error during gap analysis polling:', err)
+      }
+    }
+
+    // Start polling immediately, then every 5 seconds
+    poll()
+    gapPollingRef.current = setInterval(poll, 5000)
+  }
+
+  // Execute Gap Analysis (renamed from generateGapAnalysisBrief)
+  const executeGapAnalysis = async () => {
     try {
       setError(null)
-      setIsLoadingGapBrief(true)
+      setIsLoadingGapReport(true)
 
-      // Call the generate-gap-analysis-brief function
-      const { data, error: functionError } = await supabase.functions.invoke('generate-gap-analysis-brief', {
+      // Get project ID - either from state or from current report
+      let projectId = currentProjectId
+      
+      if (!projectId && currentReportId) {
+        // Fetch project ID from current report
+        const { data: reportData, error: reportError } = await supabase
+          .from('reports')
+          .select('project_id')
+          .eq('id', currentReportId)
+          .single()
+        
+        if (reportError) throw reportError
+        projectId = reportData.project_id
+      }
+      
+      if (!projectId) {
+        throw new Error('No project ID available. Please create or load a project first.')
+      }
+
+      // Call the queue-gap-analysis-job function
+      const { data, error: functionError } = await supabase.functions.invoke('queue-gap-analysis-job', {
         body: { 
-          first_draft: firstDraftForGapAnalysis,
-          foundation_report: foundationReport 
+          project_id: projectId,
+          foundation_report: foundationReport,
+          first_draft: firstDraftForGapAnalysis
         },
       })
 
       if (functionError) throw functionError
       if (!data?.report_id) throw new Error('No report ID returned')
 
+      console.log('Gap analysis job queued successfully:', data.message)
       setGapReportId(data.report_id)
 
-      // Fetch the generated brief
-      const { data: reportData, error: reportError } = await supabase
-        .from('reports')
-        .select('research_brief')
-        .eq('id', data.report_id)
-        .single()
+      // Start polling for the gap analysis report
+      pollForGapAnalysisReport(data.report_id)
 
-      if (reportError) throw reportError
-      if (!reportData?.research_brief) throw new Error('No research brief generated')
-
-      setGapAnalysisBrief(reportData.research_brief)
-      setShowGapBriefModal(true)
-    } catch (err) {
-      console.error('Error generating gap analysis brief:', err)
-      setError(err instanceof Error ? err.message : 'Failed to generate gap analysis brief')
-    } finally {
-      setIsLoadingGapBrief(false)
-    }
-  }
-
-  // Execute Gap Analysis Research
-  const executeGapAnalysisResearch = async () => {
-    try {
-      setError(null)
-      setIsLoadingGapReport(true)
-      setShowGapBriefModal(false)
-
-      if (!gapReportId) throw new Error('No report ID available')
-
-      // Call the execute-research function with the selected model
-      const { data, error: functionError } = await supabase.functions.invoke('execute-research', {
-        body: { 
-          report_id: gapReportId,
-          model: selectedModel 
-        },
-      })
-
-      if (functionError) throw functionError
-      if (!data?.final_report) throw new Error('No final report generated')
-
-      setGapAnalysisReport(data.final_report)
     } catch (err) {
       console.error('Error executing gap analysis:', err)
       setError(err instanceof Error ? err.message : 'Failed to execute gap analysis')
-      setShowGapBriefModal(true) // Reopen modal on error
-    } finally {
       setIsLoadingGapReport(false)
     }
   }
+
 
   return (
     <div className="min-h-screen bg-zinc-950">
@@ -406,8 +441,27 @@ export default function ResearchCopilot() {
             </h2>
           </div>
 
-          <div className="bg-zinc-900 rounded-lg border border-zinc-800 p-6 mb-6">
-            <div className="grid gap-6">
+          {isLoadingReport && currentReportId && !foundationReport ? (
+            <JobStatusDisplay 
+              reportId={currentReportId}
+              onComplete={(finalReport) => {
+                setFoundationReport(finalReport);
+                setIsLoadingReport(false);
+              }}
+              onError={(errorMessage) => {
+                setError(errorMessage);
+                setIsLoadingReport(false);
+              }}
+            />
+          ) : foundationReport ? (
+            <ReportDisplay 
+              title="Foundation Report" 
+              content={foundationReport} 
+              className="animate-in fade-in duration-500"
+            />
+          ) : (
+            <div className="bg-zinc-900 rounded-lg border border-zinc-800 p-6 mb-6">
+              <div className="grid gap-6">
                {/* Project Context */}
                <div>
                  <div className="flex items-center justify-between mb-2">
@@ -520,209 +574,102 @@ External Labor Market Intelligence: Specifies the integration with a proprietary
                 </div>
               </div>
 
-               {/* Test Buttons */}
-               <div className="grid grid-cols-2 gap-2 mb-2">
-                 <button
-                   onClick={async () => {
-                     try {
-                       console.log('Testing OpenRouter API...')
-                       const { data, error } = await supabase.functions.invoke('test-openrouter', {})
-                       if (error) {
-                         console.error('OpenRouter test error:', error)
-                         setError(`❌ OpenRouter test failed: ${error.message}`)
-                       } else {
-                         console.log('OpenRouter test success:', data)
-                         setError(`✅ OpenRouter test passed: ${data.response}`)
-                       }
-                     } catch (err) {
-                       console.error('OpenRouter test error:', err)
-                       setError(`OpenRouter test error: ${err instanceof Error ? err.message : 'Unknown error'}`)
-                     }
-                   }}
-                   className="py-2 bg-red-600 text-white rounded-lg hover:bg-red-500 transition-colors text-xs"
-                 >
-                   🤖 Test OpenRouter
-                 </button>
-                 
-                 <button
-                   onClick={async () => {
-                     try {
-                       if (!projectContext || !chapterTemplate) {
-                         setError('❌ Please fill in Project Context and select Chapter Template first')
-                         return
-                       }
-
-                       console.log('Testing foundation workflow...')
-                       
-                       // Create a test project first
-                       const { data: projectData, error: projectError } = await supabase
-                         .from('projects')
-                         .insert({
-                           name: `Test Project ${new Date().toISOString()}`,
-                           // chapter_template_prompt: selectedTemplate!.prompt, // Commented out - will be handled by backend
-                           chapter_template_id: chapterTemplate, // Save the selected template ID
-                           project_context: projectContext,
-                           key_documents_summary: docsSummary,
-                         })
-                         .select('id')
-                         .single()
-
-                       if (projectError) {
-                         setError(`❌ Project creation failed: ${projectError.message}`)
-                         return
-                       }
-
-                       // Test the simplified foundation function
-                       const { data, error } = await supabase.functions.invoke('test-foundation-simple', {
-                         body: { project_id: projectData.id }
-                       })
-                       
-                       if (error) {
-                         console.error('Foundation test error:', error)
-                         setError(`❌ Foundation test failed: ${error.message}`)
-                       } else {
-                         console.log('Foundation test success:', data)
-                         setError(`✅ Foundation workflow test passed! Report ID: ${data.report_id}`)
-                       }
-                     } catch (err) {
-                       console.error('Foundation test error:', err)
-                       setError(`Foundation test error: ${err instanceof Error ? err.message : 'Unknown error'}`)
-                     }
-                   }}
-                   className="py-2 bg-orange-600 text-white rounded-lg hover:bg-orange-500 transition-colors text-xs"
-                 >
-                   🏗️ Test Foundation
-                 </button>
-               </div>
-               <div className="grid grid-cols-2 gap-2 mb-2">
-                 <button
-                   onClick={async () => {
-                     try {
-                       console.log('Testing simple function...')
-                       const { data, error } = await supabase.functions.invoke('test-simple', {})
-                       if (error) {
-                         console.error('Test function error:', error)
-                         setError(`Test failed: ${error.message}`)
-                       } else {
-                         console.log('Test function success:', data)
-                         setError(`✅ Basic test passed`)
-                       }
-                     } catch (err) {
-                       console.error('Test error:', err)
-                       setError(`Test error: ${err instanceof Error ? err.message : 'Unknown error'}`)
-                     }
-                   }}
-                   className="py-2 bg-green-600 text-white rounded-lg hover:bg-green-500 transition-colors text-xs"
-                 >
-                   🧪 Basic
-                 </button>
-                 
-                 <button
-                   onClick={async () => {
-                     try {
-                       console.log('Testing database function...')
-                       const { data, error } = await supabase.functions.invoke('test-database', {})
-                       if (error) {
-                         console.error('Database test error:', error)
-                         setError(`Database test failed: ${error.message}`)
-                       } else {
-                         console.log('Database test success:', data)
-                         setError(`✅ Database test passed`)
-                       }
-                     } catch (err) {
-                       console.error('Database test error:', err)
-                       setError(`Database test error: ${err instanceof Error ? err.message : 'Unknown error'}`)
-                     }
-                   }}
-                   className="py-2 bg-purple-600 text-white rounded-lg hover:bg-purple-500 transition-colors text-xs"
-                 >
-                   🗄️ Database
-                 </button>
-
-                 <button
-                   onClick={async () => {
-                     try {
-                       if (!projectContext || !chapterTemplate) {
-                         setError('❌ Please fill in Project Context and select Chapter Template first')
-                         return
-                       }
-
-                       console.log('Testing foundation workflow...')
-                       
-                       // Create a test project first
-                       const { data: projectData, error: projectError } = await supabase
-                         .from('projects')
-                         .insert({
-                           name: `Test Project ${new Date().toISOString()}`,
-                           // chapter_template_prompt: selectedTemplate!.prompt, // Commented out - will be handled by backend
-                           chapter_template_id: chapterTemplate, // Save the selected template ID
-                           project_context: projectContext,
-                           key_documents_summary: docsSummary,
-                         })
-                         .select('id')
-                         .single()
-
-                       if (projectError) {
-                         setError(`❌ Project creation failed: ${projectError.message}`)
-                         return
-                       }
-
-                       // Test the simplified foundation function
-                       const { data, error } = await supabase.functions.invoke('test-foundation-simple', {
-                         body: { project_id: projectData.id }
-                       })
-                       
-                       if (error) {
-                         console.error('Foundation test error:', error)
-                         setError(`❌ Foundation test failed: ${error.message}`)
-                       } else {
-                         console.log('Foundation test success:', data)
-                         setError(`✅ Foundation workflow test passed! Report ID: ${data.report_id}`)
-                       }
-                     } catch (err) {
-                       console.error('Foundation test error:', err)
-                       setError(`Foundation test error: ${err instanceof Error ? err.message : 'Unknown error'}`)
-                     }
-                   }}
-                   className="py-2 bg-orange-600 text-white rounded-lg hover:bg-orange-500 transition-colors text-xs"
-                 >
-                   🏗️ Foundation
-                 </button>
-               </div>
 
                {/* Generate Button */}
                <button
-                 onClick={generateFoundationBrief}
-                 disabled={isLoadingBrief || !projectContext || !chapterTemplate}
+                 onClick={generateResearchTasks}
+                 disabled={isGeneratingTasks || !projectContext || !chapterTemplate}
                  className="w-full py-3 bg-blue-600 text-white rounded-lg hover:bg-blue-500 transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center space-x-2"
                >
-                 {isLoadingBrief ? (
+                 {isGeneratingTasks ? (
                    <>
                      <div className="w-5 h-5 border-2 border-white/30 border-t-white rounded-full animate-spin" />
-                     <span>Generating Foundation Brief...</span>
+                     <span>Generating Research Plan...</span>
                    </>
                  ) : (
                    <>
                      <FileText className="w-5 h-5" />
-                     <span>Generate Foundation Brief</span>
+                     <span>Generate Research Plan</span>
                    </>
                  )}
                </button>
             </div>
           </div>
-
-          {/* Loading State for Report Execution */}
-          {isLoadingReport && (
-            <LoadingSpinner message="Executing deep research, this may take a moment..." size="lg" />
           )}
 
-          {/* Foundation Report Display */}
-          {foundationReport && !isLoadingReport && (
-            <ReportDisplay 
-              title="Foundation Report" 
-              content={foundationReport} 
-              className="animate-in fade-in duration-500"
-            />
+          {/* Task Review Interface */}
+          {showTaskReview && (
+            <div className="bg-zinc-900 rounded-lg border border-zinc-800 p-6 mb-6">
+              <div className="mb-4">
+                <h3 className="text-lg font-semibold text-zinc-100 mb-2 flex items-center space-x-2">
+                  <Search className="w-5 h-5" />
+                  <span>Review Research Tasks</span>
+                </h3>
+                <p className="text-sm text-zinc-400">
+                  Review and edit the research questions below. You can modify, delete, or add new tasks before execution.
+                </p>
+              </div>
+
+              <div className="space-y-3 mb-6">
+                {researchTasks.map((task, index) => (
+                  <div key={index} className="bg-zinc-800 rounded-lg p-4 border border-zinc-700">
+                    <div className="flex items-start justify-between mb-2">
+                      <span className="text-sm font-medium text-zinc-300">Task {index + 1}</span>
+                      <button
+                        onClick={() => {
+                          const newTasks = researchTasks.filter((_, i) => i !== index)
+                          setResearchTasks(newTasks)
+                        }}
+                        className="text-red-400 hover:text-red-300 text-sm"
+                      >
+                        Delete
+                      </button>
+                    </div>
+                    <textarea
+                      value={task}
+                      onChange={(e) => {
+                        const newTasks = [...researchTasks]
+                        newTasks[index] = e.target.value
+                        setResearchTasks(newTasks)
+                      }}
+                      className="w-full px-3 py-2 bg-zinc-700 border border-zinc-600 rounded text-zinc-100 text-sm resize-none"
+                      rows={3}
+                    />
+                  </div>
+                ))}
+              </div>
+
+              <div className="flex items-center space-x-3 mb-4">
+                <button
+                  onClick={() => {
+                    setResearchTasks([...researchTasks, ''])
+                  }}
+                  className="px-4 py-2 bg-green-600 hover:bg-green-500 text-white rounded-lg text-sm"
+                >
+                  Add Task
+                </button>
+                <span className="text-sm text-zinc-400">
+                  {researchTasks.length} tasks total
+                </span>
+              </div>
+
+              <div className="flex space-x-3">
+                <button
+                  onClick={() => setShowTaskReview(false)}
+                  className="flex-1 py-3 bg-zinc-700 hover:bg-zinc-600 text-white rounded-lg transition-colors"
+                >
+                  Back to Form
+                </button>
+                <button
+                  onClick={executeResearchWithTasks}
+                  disabled={researchTasks.length === 0 || researchTasks.some(task => !task.trim())}
+                  className="flex-1 py-3 bg-blue-600 hover:bg-blue-500 text-white rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center space-x-2"
+                >
+                  <ArrowRight className="w-5 h-5" />
+                  <span>Execute Research ({researchTasks.length} tasks)</span>
+                </button>
+              </div>
+            </div>
           )}
         </section>
 
@@ -753,14 +700,14 @@ External Labor Market Intelligence: Specifies the integration with a proprietary
                 </div>
 
                 <button
-                  onClick={generateGapAnalysisBrief}
-                  disabled={isLoadingGapBrief || !firstDraftForGapAnalysis}
+                  onClick={executeGapAnalysis}
+                  disabled={isLoadingGapReport || !firstDraftForGapAnalysis || !foundationReport}
                   className="w-full py-3 bg-green-600 text-white rounded-lg hover:bg-green-500 transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center space-x-2"
                 >
-                  {isLoadingGapBrief ? (
+                  {isLoadingGapReport ? (
                     <>
                       <div className="w-5 h-5 border-2 border-white/30 border-t-white rounded-full animate-spin" />
-                      <span>Generating Gap Analysis Brief...</span>
+                      <span>Executing Gap Analysis...</span>
                     </>
                   ) : (
                     <>
@@ -775,7 +722,15 @@ External Labor Market Intelligence: Specifies the integration with a proprietary
 
             {/* Loading State for Gap Report Execution */}
             {isLoadingGapReport && (
-              <LoadingSpinner message="Executing gap analysis research..." size="lg" />
+              <div className="bg-zinc-900 border border-zinc-800 rounded-lg p-6 my-6">
+                <div className="flex items-center space-x-3 text-blue-300">
+                  <div className="w-8 h-8 border-2 border-blue-300/30 border-t-blue-300 rounded-full animate-spin" />
+                  <div>
+                    <p className="font-semibold">Executing gap analysis research...</p>
+                    <p className="text-sm text-blue-400">This may take several minutes.</p>
+                  </div>
+                </div>
+              </div>
             )}
 
             {/* Gap Analysis Report Display */}
@@ -790,30 +745,8 @@ External Labor Market Intelligence: Specifies the integration with a proprietary
         )}
       </main>
 
-      {/* Foundation Brief Review Modal */}
-      <BriefReviewModal
-        isOpen={showBriefModal}
-        title="Review Foundation Brief"
-        brief={foundationBrief}
-        selectedModel={selectedModel}
-        onModelChange={setSelectedModel}
-        onExecute={executeFoundationResearch}
-        onCancel={() => setShowBriefModal(false)}
-        isExecuting={isLoadingReport}
-      />
-
-      {/* Gap Analysis Brief Review Modal */}
-      <BriefReviewModal
-        isOpen={showGapBriefModal}
-        title="Review Gap Analysis Brief"
-        brief={gapAnalysisBrief}
-        selectedModel={selectedModel}
-        onModelChange={setSelectedModel}
-        onExecute={executeGapAnalysisResearch}
-        onCancel={() => setShowGapBriefModal(false)}
-        isExecuting={isLoadingGapReport}
-      />
-
+      {/* Modals are now removed */}
+      
       {/* Project Loader Modal */}
       {showProjectLoader && (
         <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">

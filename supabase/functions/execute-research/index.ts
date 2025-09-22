@@ -11,7 +11,7 @@ Deno.serve(async (req) => {
 
   try {
     // Parse the request body
-    const { report_id } = await req.json()
+    const { report_id, custom_research_plan } = await req.json()
     
     // Validate required input
     if (!report_id) {
@@ -33,7 +33,10 @@ Deno.serve(async (req) => {
       .from('jobs')
       .insert({
         job_type: 'execute_research',
-        payload: { report_id }
+        payload: { 
+          report_id,
+          custom_research_plan: custom_research_plan || null
+        }
       })
       .select('id')
       .single()
