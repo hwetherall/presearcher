@@ -55,13 +55,14 @@ Deno.serve(async (req) => {
       Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? ''
     )
 
-    // Fetch project data with chapter template via join
+    // Fetch project data with chapter template via join (left join for custom prompts)
     console.log('Fetching project data from database...')
     const { data: projectData, error: projectError } = await supabaseAdminClient
       .from('projects')
       .select(`
         project_context,
         key_documents_summary,
+        custom_prompt,
         chapter_templates ( chapter_prompt )
       `)
       .eq('id', project_id)
@@ -77,9 +78,24 @@ Deno.serve(async (req) => {
     }
     console.log('Project data fetched successfully')
 
+    // Determine the chapter prompt to use (template or custom)
+    let chapterPrompt = ''
+    if (projectData.custom_prompt) {
+      // Use custom prompt directly
+      chapterPrompt = projectData.custom_prompt
+      console.log('Using custom prompt for project')
+    } else if (projectData.chapter_templates?.chapter_prompt) {
+      // Use template prompt
+      chapterPrompt = projectData.chapter_templates.chapter_prompt
+      console.log('Using template prompt for project')
+    } else {
+      chapterPrompt = 'No chapter template or custom prompt provided.'
+      console.warn('No prompt found for project - using fallback')
+    }
+
     // Construct the full prompt
     let fullPrompt = FOUNDATION_META_PROMPT
-    fullPrompt = fullPrompt.replace('{Chapter_Template_Prompt}', projectData.chapter_templates?.chapter_prompt || 'No chapter template provided.')
+    fullPrompt = fullPrompt.replace('{Chapter_Template_Prompt}', chapterPrompt)
     fullPrompt = fullPrompt.replace('{Project_Context}', projectData.project_context)
     fullPrompt = fullPrompt.replace('{Key_Documents_Summary}', projectData.key_documents_summary || 'No documents provided.')
 

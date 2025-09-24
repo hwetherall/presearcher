@@ -1,4 +1,5 @@
-// supabase/functions/research-worker/index.ts
+// supabase/functions/research-worker-v2/index.ts
+// Modified version that creates atomic tasks for the Next.js app to process
 
 import { createClient, SupabaseClient } from 'https://esm.sh/@supabase/supabase-js@2'
 import { corsHeaders } from '../_shared/cors.ts'
@@ -17,34 +18,30 @@ interface Job {
     first_draft?: string;
     custom_research_plan?: string[];
   };
-  // ... other columns
+}
+
+interface AtomicTask {
+  id: string;
+  job_id: number;
+  report_id: string;
+  task_index: number;
+  question: string;
+  status: 'pending' | 'processing' | 'completed' | 'failed';
+  result?: { report_text: string };
 }
 
 // --- Constants ---
-const SYNTHESIZER_META_PROMPT = `You are a meticulous and analytical synthesis agent. Your sole purpose is to transform a series of raw, atomic research reports into a structured, evidence-backed JSON object.
+const SYNTHESIZER_META_PROMPT = `You are a Senior Partner at a top-tier strategy consulting firm, renowned for your ability to synthesize complex information into clear, decision-grade reports. You have been given a collection of raw research findings from your junior analyst team.
 
-You will be given a collection of research findings, each corresponding to a specific research task.
+Your task is to read all the provided raw data and transform it into a single, cohesive, client-ready "Market Research Pack."
 
-Your task is to:
-1.  Read and understand all the provided raw research data.
-2.  Identify distinct, verifiable claims from the data.
-3.  For each claim, you MUST identify and extract the source URL(s) that support it.
-4.  Synthesize related findings into concise, well-formed claims. For example, if one source says the market is $10B and another says it's $12B, a good claim would be "The market size is estimated to be between $10B and $12B."
-5.  Construct a single JSON object as your final output.
+You must adhere to the following structure and principles:
+1.  **Executive Summary:** Begin with a concise, powerful "Executive Summary" section that synthesizes the most critical, overarching findings from the entire document.
+2.  **Cohesive Narrative:** Weave the individual research sections together into a smooth, logical narrative. Do not simply list the sections; ensure they flow together.
+3.  **Professional Formatting:** Use clear Markdown formatting, including headers, sub-headers, bold text for key terms, and tables for comparative data.
+4.  **Synthesize, Do Not Invent:** You MUST only use the information present in the "Raw Research Data" provided below. Do not introduce any outside knowledge or facts. Your job is to synthesize, not to conduct new research.
 
-**JSON OUTPUT REQUIREMENTS:**
-- The root of the object must be a single key named "claims".
-- The value of "claims" must be an array of objects.
-- Each object in the array must have exactly two keys:
-    1.  \`"claim"\`: A string containing the synthesized, evidence-based statement.
-    2.  \`"evidence"\`: An array of strings, where each string is a complete URL pointing to the source. It is normal for this array to contain only one URL.
-
-**RULES:**
-- You MUST respond with ONLY a valid JSON object. Do not include any explanatory text, markdown formatting, or any characters outside of the JSON structure.
-- Every claim you generate MUST be directly supported by the provided raw data and its sources. DO NOT invent information.
-- If the raw data for a task indicates that no verifiable evidence was found, do not generate a claim for it.
-
-Here is the raw data from the research team:
+Here is the raw data from your team:
 ---
 {raw_data}
 ---`
@@ -65,6 +62,40 @@ async function handleFailure(supabaseAdminClient: SupabaseClient, job: Job, erro
   await supabaseAdminClient.from('reports').update({
     status: 'error'
   }).eq('id', job.payload.report_id)
+}
+
+/**
+ * Triggers the Next.js app to process pending atomic tasks
+ */
+async function triggerTaskProcessor(): Promise<void> {
+  try {
+    // Get the app URL from environment or use localhost for development
+    const appUrl = Deno.env.get('NEXT_APP_URL') || 'http://host.docker.internal:3000'
+    const internalApiKey = Deno.env.get('INTERNAL_API_KEY') || 'development-key'
+    
+    console.log(`Attempting to trigger task processor at ${appUrl}/api/process-atomic-tasks`)
+    
+    const response = await fetch(`${appUrl}/api/process-atomic-tasks`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${internalApiKey}`
+      },
+      body: JSON.stringify({})
+    })
+
+    if (!response.ok) {
+      console.warn(`Task processor trigger failed: ${response.status} ${response.statusText}`)
+    } else {
+      const result = await response.json()
+      console.log(`Task processor triggered successfully: ${result.message}`)
+    }
+  } catch (error) {
+    // Don't fail the job if we can't trigger the processor
+    // The processor might be running on a schedule anyway
+    console.warn(`Could not reach Next.js app (this is OK if it's not running yet): ${error.message}`)
+    console.warn(`Tasks are queued and will be processed when the Next.js app starts.`)
+  }
 }
 
 /**
@@ -97,7 +128,6 @@ async function executePlanningStage(supabaseAdminClient: SupabaseClient, job: Jo
     research_plan = planResponse.data.research_plan
   } else {
     // For regular research jobs, use existing logic
-    // Fetch report and project data
     const { data: reportData } = await supabaseAdminClient.from('reports').select('project_id').eq('id', job.payload.report_id).single()
     const { data: projectData } = await supabaseAdminClient.from('projects').select(`
       project_context, key_documents_summary, custom_prompt, chapter_templates ( chapter_prompt )
@@ -127,7 +157,30 @@ async function executePlanningStage(supabaseAdminClient: SupabaseClient, job: Jo
   
   console.log(`[Job ${job.id}] Planning complete. Generated ${research_plan.length} tasks.`)
 
-  // Initialize state and save to job payload
+  // Create atomic tasks in the database
+  const tasksToCreate = research_plan.map((question, index) => ({
+    job_id: job.id,
+    report_id: job.payload.report_id,
+    task_index: index,
+    question: question,
+    status: 'pending'
+  }))
+
+  console.log(`[Job ${job.id}] Attempting to create ${tasksToCreate.length} atomic tasks:`, JSON.stringify(tasksToCreate, null, 2))
+  
+  const { data: insertResult, error: insertError } = await supabaseAdminClient
+    .from('atomic_tasks')
+    .insert(tasksToCreate)
+    .select()
+
+  if (insertError) {
+    console.error(`[Job ${job.id}] Failed to create atomic tasks:`, insertError)
+    throw new Error(`Failed to create atomic tasks: ${insertError.message}`)
+  }
+
+  console.log(`[Job ${job.id}] Successfully created ${insertResult?.length || 0} atomic tasks:`, insertResult?.map(t => ({ id: t.id.substring(0, 8), status: t.status })))
+
+  // Update job payload
   await supabaseAdminClient.from('jobs').update({
     payload: {
       ...job.payload,
@@ -136,36 +189,59 @@ async function executePlanningStage(supabaseAdminClient: SupabaseClient, job: Jo
       next_task_index: 0,
     }
   }).eq('id', job.id)
+
+  // Trigger the task processor in the Next.js app
+  await triggerTaskProcessor()
 }
 
 /**
- * REUSABLE HELPER: Execute atomic research tasks in parallel with concurrency limit
+ * Check if all atomic tasks for a job are completed
  */
-async function runAtomicResearch(supabaseAdminClient: SupabaseClient, research_plan: string[]): Promise<any[]> {
-  const CONCURRENCY_LIMIT = 3 // Adjust based on your needs
-  const results: any[] = []
-  
-  // Execute tasks in batches with concurrency limit
-  for (let i = 0; i < research_plan.length; i += CONCURRENCY_LIMIT) {
-    const batch = research_plan.slice(i, i + CONCURRENCY_LIMIT)
-    const batchPromises = batch.map(async (question, batchIndex) => {
-      const taskResponse = await supabaseAdminClient.functions.invoke('execute-atomic-task', {
-        body: { question }
-      })
-      
-      if (taskResponse.error) {
-        console.warn(`Atomic task failed: ${taskResponse.error.message}`)
-        return { report_text: `[Task failed: ${taskResponse.error.message}]` }
-      }
-      
-      return taskResponse.data
-    })
-    
-    const batchResults = await Promise.all(batchPromises)
-    results.push(...batchResults)
+async function checkTasksCompletion(supabaseAdminClient: SupabaseClient, job: Job): Promise<boolean> {
+  const { data: tasks, error } = await supabaseAdminClient
+    .from('atomic_tasks')
+    .select('id, status, result')
+    .eq('job_id', job.id)
+    .order('task_index', { ascending: true })
+
+  if (error) {
+    console.error(`Failed to fetch tasks for job ${job.id}:`, error)
+    return false
   }
-  
-  return results
+
+  if (!tasks || tasks.length === 0) {
+    return false
+  }
+
+  // Check if all tasks are completed or failed
+  const allDone = tasks.every(task => 
+    task.status === 'completed' || task.status === 'failed'
+  )
+
+  if (allDone) {
+    // Update job payload with results
+    const atomic_results = tasks.map(task => task.result || { report_text: '[Task failed]' })
+    
+    await supabaseAdminClient.from('jobs').update({
+      payload: {
+        ...job.payload,
+        atomic_results,
+        next_task_index: tasks.length
+      },
+      last_ran_at: new Date().toISOString()
+    }).eq('id', job.id)
+
+    return true
+  }
+
+  // If some tasks are still pending, trigger the processor again
+  const pendingCount = tasks.filter(t => t.status === 'pending').length
+  if (pendingCount > 0) {
+    console.log(`[Job ${job.id}] ${pendingCount} tasks still pending, triggering processor`)
+    await triggerTaskProcessor()
+  }
+
+  return false
 }
 
 /**
@@ -195,53 +271,33 @@ async function runSynthesis(supabaseAdminClient: SupabaseClient, rawData: string
     throw new Error('Synthesizer returned empty content.')
   }
   
-  // Parse the JSON response to validate it's properly formatted
-  let parsedReport
-  try {
-    parsedReport = JSON.parse(finalReportContent)
-  } catch (error) {
-    throw new Error(`Synthesizer returned invalid JSON: ${error.message}`)
-  }
-  
-  // Return the JSON as a string for storage in the database
-  return JSON.stringify(parsedReport)
+  // Return the narrative report directly (no JSON parsing needed)
+  return finalReportContent
 }
 
 /**
- * STAGE 2: Execute the next single atomic research task (for backward compatibility).
+ * STAGE 2: Monitor task completion and proceed to synthesis when ready
  */
 async function executeResearchStage(supabaseAdminClient: SupabaseClient, job: Job) {
-  const { report_id, research_plan, atomic_results, next_task_index } = job.payload
+  const { report_id } = job.payload
   
-  console.log(`[Job ${job.id}] Executing task ${next_task_index + 1} of ${research_plan.length}`)
-  const question = research_plan[next_task_index]
+  console.log(`[Job ${job.id}] Checking task completion status`)
 
-  // Invoke the atomic task function
-  const taskResponse = await supabaseAdminClient.functions.invoke('execute-atomic-task', {
-    body: { question }
-  })
-  
-  if (taskResponse.error) {
-    // Note: A non-2xx response from the function will land here.
-    // The atomic task function is designed to not throw errors but return a structured message,
-    // so this path indicates a more fundamental issue (e.g., the function crashed).
-    console.warn(`[Job ${job.id}] Atomic task invocation failed: ${taskResponse.error.message}`)
-    atomic_results[next_task_index] = { report_text: `[Task invocation failed: ${taskResponse.error.message}]` };
-  } else {
-    atomic_results[next_task_index] = taskResponse.data
+  // Check if all tasks are completed
+  const allTasksCompleted = await checkTasksCompletion(supabaseAdminClient, job)
+
+  if (!allTasksCompleted) {
+    // Tasks are still processing, update last_ran_at to prevent timeout
+    await supabaseAdminClient.from('jobs').update({
+      last_ran_at: new Date().toISOString()
+    }).eq('id', job.id)
+    
+    console.log(`[Job ${job.id}] Tasks still processing, will check again later`)
+    return
   }
-  
-  // Update payload with the result and increment the index
-  await supabaseAdminClient.from('jobs').update({
-    payload: {
-      ...job.payload,
-      atomic_results,
-      next_task_index: next_task_index + 1,
-    },
-    last_ran_at: new Date().toISOString()
-  }).eq('id', job.id)
-  
-  console.log(`[Job ${job.id}] Task ${next_task_index + 1} complete.`)
+
+  // All tasks are completed, proceed to synthesis
+  await executeSynthesisStage(supabaseAdminClient, job)
 }
 
 /**
@@ -277,28 +333,37 @@ async function executeSynthesisStage(supabaseAdminClient: SupabaseClient, job: J
 }
 
 /**
- * NEW: Execute gap analysis workflow using reusable components
+ * NEW: Execute gap analysis workflow using the new task-based approach
  */
 async function executeGapAnalysisWorkflow(supabaseAdminClient: SupabaseClient, job: Job) {
-  const { report_id, research_plan } = job.payload
-  console.log(`[Job ${job.id}] Starting gap analysis workflow with ${research_plan.length} tasks.`)
+  const { report_id } = job.payload
+  console.log(`[Job ${job.id}] Checking gap analysis task completion`)
 
-  // Step B: Execute atomic research tasks in parallel
-  console.log(`[Job ${job.id}] Executing atomic research tasks...`)
-  const atomic_results = await runAtomicResearch(supabaseAdminClient, research_plan)
+  // Check if all tasks are completed
+  const allTasksCompleted = await checkTasksCompletion(supabaseAdminClient, job)
 
-  // Step C: Combine results for synthesis
+  if (!allTasksCompleted) {
+    // Tasks are still processing
+    await supabaseAdminClient.from('jobs').update({
+      last_ran_at: new Date().toISOString()
+    }).eq('id', job.id)
+    
+    console.log(`[Job ${job.id}] Gap analysis tasks still processing`)
+    return
+  }
+
+  // All tasks completed, proceed to synthesis
+  const { research_plan, atomic_results } = job.payload
+  
   const combinedReportTexts = atomic_results.map((result, index) => {
     const reportText = result?.report_text || `[This research task failed to produce data.]`
     return `## Research Task ${index + 1}: ${research_plan[index]}\n\n${reportText}`
   })
   const rawData = combinedReportTexts.join('\n\n---\n\n')
 
-  // Step C: Synthesize final report
   console.log(`[Job ${job.id}] Synthesizing final gap analysis report...`)
   const finalReport = await runSynthesis(supabaseAdminClient, rawData)
 
-  // Step D: Update database
   console.log(`[Job ${job.id}] Gap analysis complete. Saving final report.`)
   
   await supabaseAdminClient.from('reports').update({
@@ -344,19 +409,26 @@ Deno.serve(async (req) => {
     const { status, payload, job_type } = job
     
     if (status === 'pending') {
+      // Create atomic tasks and start processing
       await executePlanningStage(supabaseAdminClient, job)
     } else if (status === 'in_progress') {
       if (job_type === 'execute_gap_analysis') {
-        // New gap analysis workflow - execute all steps at once
-        await executeGapAnalysisWorkflow(supabaseAdminClient, job)
-      } else {
-        // Original execute_research workflow - step by step
-        const { research_plan, next_task_index } = payload
-        
-        if (next_task_index < research_plan.length) {
-          await executeResearchStage(supabaseAdminClient, job)
+        // Gap analysis workflow
+        if (!payload.research_plan) {
+          // First time processing, need to create tasks
+          await executePlanningStage(supabaseAdminClient, job)
         } else {
-          await executeSynthesisStage(supabaseAdminClient, job)
+          // Check task completion
+          await executeGapAnalysisWorkflow(supabaseAdminClient, job)
+        }
+      } else {
+        // Regular research workflow
+        if (!payload.research_plan) {
+          // First time processing, need to create tasks
+          await executePlanningStage(supabaseAdminClient, job)
+        } else {
+          // Check task completion
+          await executeResearchStage(supabaseAdminClient, job)
         }
       }
     }
