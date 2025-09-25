@@ -24,6 +24,14 @@ Based on the provided inputs, generate a complete and detailed research prompt (
 5.  **Adopt a Skeptical Stance:** Ensure some questions are designed to find "negative space"—gaps, weaknesses, failed attempts, and customer complaints about existing solutions.
 6.  **Prescribe the Output Structure:** The brief must end with a section detailing the required \`Output Requirements\`. Instruct the AI Research Engine to structure its final report with clear Markdown headers for each research pillar and to present tabular data using Markdown tables. It must also include a clear instruction on how to handle missing information (e.g., "If you cannot find specific data, you must explicitly state 'No verifiable public evidence was found'").
 
+**CRITICAL: SOURCE CITATION REQUIREMENTS**
+The brief MUST include explicit instructions for the AI Research Engine to:
+- Provide complete, working URLs for every fact, statistic, and claim
+- Use inline citations with full URLs: [Source Name](https://complete-url.com)
+- NEVER use placeholder citations like [1], [2], etc.
+- Include a comprehensive "Bibliography" section with ALL sources at the end
+- Preserve and cite ALL sources found during research - do not omit any URLs
+
 **WHAT NOT TO DO:**
 *   Do not write the research report yourself. You are only writing the *prompt* for the research AI.
 *   Do not ask vague questions like "What is the market?" Instead, ask "What was the total addressable market size in USD for workforce analytics in 2024, according to Gartner or Forrester?"
@@ -84,9 +92,9 @@ Deno.serve(async (req) => {
       // Use custom prompt directly
       chapterPrompt = projectData.custom_prompt
       console.log('Using custom prompt for project')
-    } else if (projectData.chapter_templates?.chapter_prompt) {
+    } else if (projectData.chapter_templates && 'chapter_prompt' in projectData.chapter_templates) {
       // Use template prompt
-      chapterPrompt = projectData.chapter_templates.chapter_prompt
+      chapterPrompt = (projectData.chapter_templates as any).chapter_prompt
       console.log('Using template prompt for project')
     } else {
       chapterPrompt = 'No chapter template or custom prompt provided.'
@@ -99,18 +107,14 @@ Deno.serve(async (req) => {
     fullPrompt = fullPrompt.replace('{Project_Context}', projectData.project_context)
     fullPrompt = fullPrompt.replace('{Key_Documents_Summary}', projectData.key_documents_summary || 'No documents provided.')
 
-    // --- START: DEBUGGING BLOCK ---
-    // Call OpenRouter
+    // Get OpenRouter API key
     const openRouterApiKey = Deno.env.get('OPENROUTER_API_KEY')
 
-    // This new line will print the key to our 'functions serve' log
-    console.log(`--- DEBUG --- Attempting to use OpenRouter Key: ${openRouterApiKey}`)
-
-    // This new block will cause a clear error if the key is missing
     if (!openRouterApiKey) {
       throw new Error('SERVER ERROR: OPENROUTER_API_KEY was not found in the environment.')
     }
-    // --- END: DEBUGGING BLOCK ---
+
+    console.log('OpenRouter API key found, making request...')
 
     const res = await fetch("https://openrouter.ai/api/v1/chat/completions", {
       method: 'POST',
@@ -153,7 +157,7 @@ Deno.serve(async (req) => {
       status: 200,
     })
 
-  } catch (error) {
+  } catch (error: any) {
     console.error('Function error details:', {
       message: error.message,
       stack: error.stack,

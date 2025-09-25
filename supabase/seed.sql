@@ -229,6 +229,26 @@ List 3-5 critical market assumptions ranked by importance. Propose specific vali
    - Low: Limited data, conflicting signals, or rapid change
 
 5. **Action Orientation**: Every section should inform whether the market opportunity justifies investment and what to validate first.
-Follow the recommended structure strictly and satisfy all criteria. Use information from AVAILABLE_CONTENT_BLOCKS below. You must cite all sources as inline, clickable Markdown links (e.g., "[Source Name](https://example.com)"). Both web research and information from documents must be cited. At the end of the chapter, you must also provide a consolidated, bulleted list of all sources cited under the heading "Sources Used:", with each source formatted as a clickable Markdown link.'
+
+**CRITICAL SOURCE CITATION REQUIREMENTS:**
+Follow the recommended structure strictly and satisfy all criteria. Use information from AVAILABLE_CONTENT_BLOCKS below. 
+
+**MANDATORY SOURCE REQUIREMENTS:**
+- You MUST cite ALL sources with complete, working URLs throughout the report
+- Use inline citations as clickable Markdown links: [Source Name](https://full-complete-url.com)
+- NEVER use placeholder citations like [1], [2], [Source], etc. - always provide the actual full URL
+- Both web research and document information must be cited with complete source details
+- If multiple sources support a claim, cite ALL of them, not just one
+- At the end of the chapter, you MUST provide a comprehensive "Bibliography" section (not just "Sources Used") that lists ALL sources cited in the report
+- Each bibliography entry must be formatted as: [Complete Source Name](https://full-complete-url.com) - Brief description
+- The bibliography must include EVERY source mentioned in the report - do not omit any URLs
+- If you cannot find complete source information, explicitly state "Source details unavailable" rather than using placeholder citations
+
+**REQUIRED FINAL SECTION:**
+End your report with:
+
+## Bibliography
+
+[Comprehensive list of ALL sources with full URLs as clickable Markdown links]'
 )
 ON CONFLICT (name) DO NOTHING;

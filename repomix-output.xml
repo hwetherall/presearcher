@@ -42,13 +42,19 @@ The content is organized as follows:
 <directory_structure>
 .env.local
 .gitignore
+app/api/process-atomic-tasks/route.ts
+app/api/reset-stuck-tasks/route.ts
+app/api/start-processor/route.ts
 app/globals.css
 app/layout.tsx
 app/page.tsx
-components/JobStatusDisplay.tsx
+components/AtomicTasksDisplay.tsx
+components/BackgroundProcessor.tsx
+components/LiveProgressDisplay.tsx
 components/LoadingSpinner.tsx
 components/ReportDisplay.tsx
 ershwethOneDriveDesktopInnoveraRapid Prototypingpresearcher
+lib/atomicTaskProcessor.ts
 lib/supabaseClient.ts
 next-env.d.ts
 next.config.mjs
@@ -82,8 +88,11 @@ supabase/functions/generate-gap-analysis-brief/index.ts
 supabase/functions/generate-research-plan/index_txt.txt
 supabase/functions/generate-research-plan/index.ts
 supabase/functions/get-demo-report/index.ts
+supabase/functions/process-pending-tasks/index.ts
 supabase/functions/queue-gap-analysis-job/deno.json
 supabase/functions/queue-gap-analysis-job/index.ts
+supabase/functions/regenerate-report/index.ts
+supabase/functions/research-worker-v2/index.ts
 supabase/functions/research-worker/index.ts
 supabase/functions/test-database/index.ts
 supabase/functions/test-foundation-simple/index.ts
@@ -96,109 +105,344 @@ supabase/migrations/20250919222251_refactor_projects_to_use_template_ids.sql
 supabase/migrations/20250920000000_create_jobs_table_and_enable_cron.sql
 supabase/migrations/20250920000001_schedule_research_worker.sql
 supabase/migrations/20250923120000_create_demo_reports.sql
+supabase/migrations/20250923160000_update_demo_foundation_report.sql
+supabase/migrations/20250923181000_update_cron_to_v2.sql
+supabase/migrations/20250923190000_add_atomic_tasks.sql
+supabase/migrations/20250923190001_add_atomic_tasks_indexes.sql
+supabase/migrations/20250923190002_add_atomic_tasks_permissions.sql
+supabase/migrations/20250923190003_add_atomic_tasks_permissions2.sql
+supabase/migrations/20250923190004_add_atomic_tasks_permissions3.sql
+supabase/migrations/20250924000000_add_custom_prompt_support.sql
 supabase/seed.sql
 tailwind.config.ts
+test-atomic-tasks.bat
+test-regenerate.bat
 tsconfig.json
 </directory_structure>
 
 <files>
 This section contains the contents of the repository's files.
 
-<file path=".env.local">
-NEXT_PUBLIC_SUPABASE_URL=http://127.0.0.1:54321
-OPENROUTER_API_KEY=
-NEXT_PUBLIC_SUPABASE_ANON_KEY=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZS1kZW1vIiwicm9sZSI6ImFub24iLCJleHAiOjE5ODM4MTI5OTZ9.CRXP1A7WOeoJeXxjNni43kdQwgnWNReilDMblYTn_I0
-</file>
+<file path="components/AtomicTasksDisplay.tsx">
+'use client'
 
-<file path="payload-execute.json">
-{
-    "report_id": "af86d252-35c0-4c00-9e34-5188c9a44d35"
+import React, { useState, useEffect } from 'react'
+import { supabase } from '@/lib/supabaseClient'
+import { ChevronDown, ChevronRight, CheckCircle, XCircle, Clock, AlertCircle } from 'lucide-react'
+
+interface AtomicTask {
+  id: string
+  task_index: number
+  question: string
+  status: 'pending' | 'processing' | 'completed' | 'failed'
+  result?: {
+    report_text?: string
+    [key: string]: any
   }
-</file>
+  error_message?: string
+  started_at?: string
+  completed_at?: string
+  created_at: string
+}
 
-<file path="payload.json">
-{
-    "project_id": "bc1df002-a889-4b1d-8c1a-f99d67081475"
+interface AtomicTasksDisplayProps {
+  reportId: string
+  className?: string
+}
+
+const AtomicTasksDisplay: React.FC<AtomicTasksDisplayProps> = ({ reportId, className = '' }) => {
+  const [atomicTasks, setAtomicTasks] = useState<AtomicTask[]>([])
+  const [expandedTasks, setExpandedTasks] = useState<Set<string>>(new Set())
+  const [isLoading, setIsLoading] = useState(true)
+  const [error, setError] = useState<string | null>(null)
+
+  // Fetch atomic tasks for the given report ID
+  useEffect(() => {
+    const fetchAtomicTasks = async () => {
+      try {
+        setIsLoading(true)
+        setError(null)
+
+        const { data, error: fetchError } = await supabase
+          .from('atomic_tasks')
+          .select('id, task_index, question, status, result, error_message, started_at, completed_at, created_at')
+          .eq('report_id', reportId)
+          .order('task_index', { ascending: true })
+
+        if (fetchError) throw fetchError
+
+        setAtomicTasks(data || [])
+      } catch (err) {
+        console.error('Error fetching atomic tasks:', err)
+        setError('Failed to load atomic tasks')
+      } finally {
+        setIsLoading(false)
+      }
+    }
+
+    if (reportId) {
+      fetchAtomicTasks()
+    }
+  }, [reportId])
+
+  const toggleTaskExpansion = (taskId: string) => {
+    const newExpanded = new Set(expandedTasks)
+    if (newExpanded.has(taskId)) {
+      newExpanded.delete(taskId)
+    } else {
+      newExpanded.add(taskId)
+    }
+    setExpandedTasks(newExpanded)
   }
+
+  const getStatusIcon = (status: string) => {
+    switch (status) {
+      case 'completed':
+        return <CheckCircle className="w-5 h-5 text-green-500" />
+      case 'failed':
+        return <XCircle className="w-5 h-5 text-red-500" />
+      case 'processing':
+        return <Clock className="w-5 h-5 text-blue-500 animate-pulse" />
+      case 'pending':
+        return <Clock className="w-5 h-5 text-yellow-500" />
+      default:
+        return <AlertCircle className="w-5 h-5 text-gray-500" />
+    }
+  }
+
+  const getStatusColor = (status: string) => {
+    switch (status) {
+      case 'completed':
+        return 'text-green-400'
+      case 'failed':
+        return 'text-red-400'
+      case 'processing':
+        return 'text-blue-400'
+      case 'pending':
+        return 'text-yellow-400'
+      default:
+        return 'text-gray-400'
+    }
+  }
+
+  const expandAll = () => {
+    setExpandedTasks(new Set(atomicTasks.map(task => task.id)))
+  }
+
+  const collapseAll = () => {
+    setExpandedTasks(new Set())
+  }
+
+  if (isLoading) {
+    return (
+      <div className={`bg-zinc-900 rounded-lg border border-zinc-800 p-6 ${className}`}>
+        <div className="flex items-center justify-center py-8">
+          <div className="w-6 h-6 border-2 border-blue-500/30 border-t-blue-500 rounded-full animate-spin"></div>
+          <span className="ml-3 text-zinc-400">Loading atomic tasks...</span>
+        </div>
+      </div>
+    )
+  }
+
+  if (error) {
+    return (
+      <div className={`bg-zinc-900 rounded-lg border border-zinc-800 p-6 ${className}`}>
+        <div className="flex items-center text-red-400">
+          <AlertCircle className="w-5 h-5 mr-2" />
+          <span>{error}</span>
+        </div>
+      </div>
+    )
+  }
+
+  if (atomicTasks.length === 0) {
+    return (
+      <div className={`bg-zinc-900 rounded-lg border border-zinc-800 p-6 ${className}`}>
+        <div className="text-center py-8 text-zinc-400">
+          No atomic tasks found for this report.
+        </div>
+      </div>
+    )
+  }
+
+  const completedTasks = atomicTasks.filter(task => task.status === 'completed').length
+  const failedTasks = atomicTasks.filter(task => task.status === 'failed').length
+  const processingTasks = atomicTasks.filter(task => task.status === 'processing').length
+  const pendingTasks = atomicTasks.filter(task => task.status === 'pending').length
+
+  return (
+    <div className={`bg-zinc-900 rounded-lg border border-zinc-800 ${className}`}>
+      {/* Header */}
+      <div className="p-6 border-b border-zinc-800">
+        <div className="flex items-center justify-between">
+          <div>
+            <h3 className="text-xl font-semibold text-zinc-100 mb-2">Atomic Tasks</h3>
+            <div className="flex items-center space-x-4 text-sm">
+              <span className="text-zinc-400">
+                Total: <span className="text-zinc-200 font-medium">{atomicTasks.length}</span>
+              </span>
+              {completedTasks > 0 && (
+                <span className="text-green-400">
+                  Completed: <span className="font-medium">{completedTasks}</span>
+                </span>
+              )}
+              {processingTasks > 0 && (
+                <span className="text-blue-400">
+                  Processing: <span className="font-medium">{processingTasks}</span>
+                </span>
+              )}
+              {pendingTasks > 0 && (
+                <span className="text-yellow-400">
+                  Pending: <span className="font-medium">{pendingTasks}</span>
+                </span>
+              )}
+              {failedTasks > 0 && (
+                <span className="text-red-400">
+                  Failed: <span className="font-medium">{failedTasks}</span>
+                </span>
+              )}
+            </div>
+          </div>
+          <div className="flex space-x-2">
+            <button
+              onClick={expandAll}
+              className="px-3 py-1 bg-zinc-700 hover:bg-zinc-600 text-zinc-300 text-sm rounded transition-colors"
+            >
+              Expand All
+            </button>
+            <button
+              onClick={collapseAll}
+              className="px-3 py-1 bg-zinc-700 hover:bg-zinc-600 text-zinc-300 text-sm rounded transition-colors"
+            >
+              Collapse All
+            </button>
+          </div>
+        </div>
+      </div>
+
+      {/* Tasks List */}
+      <div className="divide-y divide-zinc-800">
+        {atomicTasks.map((task) => {
+          const isExpanded = expandedTasks.has(task.id)
+          const hasResult = task.result && task.result.report_text
+          
+          return (
+            <div key={task.id} className="p-4">
+              {/* Task Header */}
+              <button
+                onClick={() => toggleTaskExpansion(task.id)}
+                className="w-full flex items-start space-x-3 text-left hover:bg-zinc-800/50 p-2 rounded-lg transition-colors"
+              >
+                <div className="flex-shrink-0 mt-0.5">
+                  {isExpanded ? (
+                    <ChevronDown className="w-4 h-4 text-zinc-400" />
+                  ) : (
+                    <ChevronRight className="w-4 h-4 text-zinc-400" />
+                  )}
+                </div>
+                
+                <div className="flex-shrink-0 mt-0.5">
+                  {getStatusIcon(task.status)}
+                </div>
+                
+                <div className="flex-1 min-w-0">
+                  <div className="flex items-center space-x-2 mb-1">
+                    <span className="text-sm font-medium text-zinc-300">
+                      Task #{task.task_index + 1}
+                    </span>
+                    <span className={`text-xs font-medium px-2 py-1 rounded-full ${getStatusColor(task.status)}`}>
+                      {task.status}
+                    </span>
+                  </div>
+                  
+                  <p className="text-zinc-100 text-sm leading-relaxed">
+                    {task.question}
+                  </p>
+                  
+                  <div className="flex items-center space-x-4 mt-2 text-xs text-zinc-500">
+                    <span>Created: {new Date(task.created_at).toLocaleDateString()}</span>
+                    {task.started_at && (
+                      <span>Started: {new Date(task.started_at).toLocaleDateString()}</span>
+                    )}
+                    {task.completed_at && (
+                      <span>Completed: {new Date(task.completed_at).toLocaleDateString()}</span>
+                    )}
+                  </div>
+                </div>
+              </button>
+
+              {/* Expanded Content */}
+              {isExpanded && (
+                <div className="mt-4 ml-9 space-y-4">
+                  {/* Error Message */}
+                  {task.status === 'failed' && task.error_message && (
+                    <div className="bg-red-900/20 border border-red-800 rounded-lg p-4">
+                      <h4 className="text-red-400 font-medium mb-2 flex items-center">
+                        <XCircle className="w-4 h-4 mr-2" />
+                        Error Message
+                      </h4>
+                      <p className="text-red-200 text-sm whitespace-pre-wrap">
+                        {task.error_message}
+                      </p>
+                    </div>
+                  )}
+
+                  {/* Result */}
+                  {hasResult && (
+                    <div className="bg-zinc-800 border border-zinc-700 rounded-lg p-4">
+                      <h4 className="text-zinc-300 font-medium mb-3 flex items-center">
+                        <CheckCircle className="w-4 h-4 mr-2 text-green-500" />
+                        Research Result
+                      </h4>
+                      <div className="prose prose-invert prose-sm max-w-none">
+                        <div 
+                          className="text-zinc-200 text-sm leading-relaxed whitespace-pre-wrap"
+                          dangerouslySetInnerHTML={{ 
+                            __html: task.result.report_text.replace(/\n/g, '<br/>') 
+                          }}
+                        />
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Raw Result Data (if available and different from report_text) */}
+                  {task.result && Object.keys(task.result).length > 0 && (
+                    <details className="bg-zinc-800/50 border border-zinc-700 rounded-lg">
+                      <summary className="p-3 cursor-pointer text-zinc-400 hover:text-zinc-300 text-sm">
+                        Raw Result Data (JSON)
+                      </summary>
+                      <div className="p-3 pt-0">
+                        <pre className="text-xs text-zinc-400 overflow-x-auto">
+                          {JSON.stringify(task.result, null, 2)}
+                        </pre>
+                      </div>
+                    </details>
+                  )}
+
+                  {/* No result message for completed tasks without results */}
+                  {task.status === 'completed' && !hasResult && (
+                    <div className="bg-zinc-800/50 border border-zinc-700 rounded-lg p-4">
+                      <p className="text-zinc-400 text-sm">
+                        Task completed but no result data is available.
+                      </p>
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
+          )
+        })}
+      </div>
+    </div>
+  )
+}
+
+export default AtomicTasksDisplay
 </file>
 
-<file path="start-dev.bat">
-@echo off
-REM This script starts all necessary development servers for the Research Co-pilot.
-REM It will open three separate terminal windows.
-
-echo =======================================================
-echo  Starting Research Co-pilot Development Environment
-echo =======================================================
-echo.
-
-REM --- Step 1: Start the main Supabase backend ---
-echo [1/3] Starting Supabase Backend (Database, etc.)...
-start "Supabase Backend" npx supabase start
-
-REM Wait for 5 seconds to give the backend a moment to initialize.
-echo Waiting 5 seconds...
-timeout /t 5 /nobreak >nul
-
-REM --- Step 2: Start the Supabase Functions server ---
-echo [2/3] Starting Supabase Functions Server...
-REM IMPORTANT: This includes the --env-file flag we perfected.
-start "Supabase Functions" npx supabase functions serve --env-file ./supabase/.env.local
-
-REM Wait for 5 seconds.
-echo Waiting 5 seconds...
-timeout /t 5 /nobreak >nul
-
-REM --- Step 3: Start the Next.js frontend server ---
-echo [3/3] Starting Next.js Frontend...
-start "Next.js Frontend" npm run dev
-
-echo.
-echo =======================================================
-echo  All services have been launched in new windows!
-echo =======================================================
-echo.
-pause
-</file>
-
-<file path="supabase/.branches/_current_branch">
-main
-</file>
-
-<file path="supabase/.env.local">
-OPENROUTER_API_KEY=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
-</file>
-
-<file path="supabase/.temp/cli-latest">
-v2.45.5
-</file>
-
-<file path="supabase/.temp/gotrue-version">
-v2.179.0
-</file>
-
-<file path="supabase/.temp/pooler-url">
-postgresql://postgres.xhfttsgovolytgdexkyd:[YOUR-PASSWORD]@aws-1-us-east-2.pooler.supabase.com:6543/postgres
-</file>
-
-<file path="supabase/.temp/postgres-version">
-17.6.1.005
-</file>
-
-<file path="supabase/.temp/project-ref">
-xhfttsgovolytgdexkyd
-</file>
-
-<file path="supabase/.temp/rest-version">
-v13.0.5
-</file>
-
-<file path="supabase/.temp/storage-version">
-custom-metadata
-</file>
-
-<file path="supabase/functions/get-demo-report/index.ts">
-// supabase/functions/get-demo-report/index.ts
+<file path="supabase/functions/process-pending-tasks/index.ts">
+// supabase/functions/process-pending-tasks/index.ts
+// Emergency function to manually process pending atomic tasks when Next.js app is not available
 
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2'
 import { corsHeaders } from '../_shared/cors.ts'
@@ -210,10 +454,171 @@ Deno.serve(async (req) => {
   }
 
   try {
-    const { report_type } = await req.json()
+    const supabaseAdminClient = createClient(
+      Deno.env.get('SUPABASE_URL') ?? '',
+      Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? ''
+    )
 
-    if (!report_type) {
-      return new Response(JSON.stringify({ error: "Missing 'report_type' in request body" }), {
+    // Get all pending atomic tasks
+    const { data: pendingTasks, error: fetchError } = await supabaseAdminClient
+      .from('atomic_tasks')
+      .select('id, question, job_id, report_id, task_index')
+      .eq('status', 'pending')
+      .order('created_at', { ascending: true })
+      .limit(10) // Process up to 10 tasks at a time
+
+    if (fetchError) {
+      throw new Error(`Failed to fetch pending tasks: ${fetchError.message}`)
+    }
+
+    if (!pendingTasks || pendingTasks.length === 0) {
+      return new Response(JSON.stringify({ 
+        message: 'No pending tasks found',
+        processed: 0 
+      }), {
+        headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+        status: 200,
+      })
+    }
+
+    console.log(`Found ${pendingTasks.length} pending tasks to process`)
+
+    // Process each task
+    let successCount = 0
+    let failureCount = 0
+
+    for (const task of pendingTasks) {
+      try {
+        console.log(`Processing task ${task.id}: ${task.question.substring(0, 50)}...`)
+
+        // Mark as processing
+        await supabaseAdminClient
+          .from('atomic_tasks')
+          .update({ 
+            status: 'processing',
+            started_at: new Date().toISOString()
+          })
+          .eq('id', task.id)
+
+        // Call the execute-atomic-task function
+        const taskResponse = await supabaseAdminClient.functions.invoke('execute-atomic-task', {
+          body: { question: task.question }
+        })
+
+        if (taskResponse.error) {
+          throw new Error(`Task execution failed: ${taskResponse.error.message}`)
+        }
+
+        const { report_text } = taskResponse.data
+
+        if (!report_text) {
+          throw new Error('No report text returned from task execution')
+        }
+
+        // Update task with result
+        await supabaseAdminClient
+          .from('atomic_tasks')
+          .update({ 
+            status: 'completed',
+            result: { report_text },
+            completed_at: new Date().toISOString()
+          })
+          .eq('id', task.id)
+
+        console.log(`Task ${task.id} completed successfully`)
+        successCount++
+
+      } catch (error: any) {
+        console.error(`Task ${task.id} failed:`, error)
+        
+        // Mark task as failed
+        await supabaseAdminClient
+          .from('atomic_tasks')
+          .update({ 
+            status: 'failed',
+            error_message: error.message,
+            result: { report_text: '[This research task failed due to processing error. No data is available for this section.]' },
+            completed_at: new Date().toISOString()
+          })
+          .eq('id', task.id)
+
+        failureCount++
+      }
+    }
+
+    return new Response(JSON.stringify({ 
+      message: `Processed ${pendingTasks.length} tasks`,
+      successful: successCount,
+      failed: failureCount,
+      total: pendingTasks.length
+    }), {
+      headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+      status: 200,
+    })
+
+  } catch (error: any) {
+    console.error('Error in process-pending-tasks function:', error)
+    
+    return new Response(JSON.stringify({ 
+      error: error.message,
+      details: error.stack 
+    }), {
+      headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+      status: 500,
+    })
+  }
+})
+</file>
+
+<file path="supabase/functions/regenerate-report/index.ts">
+// supabase/functions/regenerate-report/index.ts
+// Regenerates a Foundation Research Report using existing atomic task results
+
+import { createClient } from 'https://esm.sh/@supabase/supabase-js@2'
+import { corsHeaders } from '../_shared/cors.ts'
+
+const SYNTHESIZER_META_PROMPT = `You are a Senior Partner at a top-tier strategy consulting firm, renowned for your ability to synthesize complex information into clear, decision-grade reports. You have been given a collection of raw research findings from your junior analyst team.
+
+Your task is to read all the provided raw data and transform it into a single, cohesive, client-ready "Market Research Pack."
+
+You must adhere to the following structure and principles:
+1.  **Executive Summary:** Begin with a concise, powerful "Executive Summary" section that synthesizes the most critical, overarching findings from the entire document.
+2.  **Cohesive Narrative:** Weave the individual research sections together into a smooth, logical narrative. Do not simply list the sections; ensure they flow together.
+3.  **Professional Formatting:** Use clear Markdown formatting, including headers, sub-headers, bold text for key terms, and tables for comparative data.
+4.  **Synthesize, Do Not Invent:** You MUST only use the information present in the "Raw Research Data" provided below. Do not introduce any outside knowledge or facts. Your job is to synthesize, not to conduct new research.
+
+**CRITICAL SOURCE AND BIBLIOGRAPHY REQUIREMENTS:**
+5.  **Complete Source Citations:** You MUST cite ALL sources with full URLs throughout the report. Use inline citations in the format: [Source Name](https://full-url.com)
+6.  **Preserve All URLs:** Extract and include EVERY URL mentioned in the raw research data. Do not lose or omit any source URLs.
+7.  **Complete Bibliography:** End your report with a comprehensive "Bibliography" section that lists ALL sources used, formatted as:
+    - [Source Name](https://full-url.com) - Brief description if available
+8.  **No Placeholder Citations:** Never use [1], [2], etc. Always use the actual URLs and source names.
+9.  **Source Verification:** If a claim has multiple sources, cite ALL of them, not just one.
+
+**REQUIRED FINAL SECTION:**
+Your report MUST end with:
+
+## Bibliography
+
+[List ALL sources found in the raw data as clickable markdown links with full URLs]
+
+Here is the raw data from your team:
+---
+{raw_data}
+---`
+
+Deno.serve(async (req) => {
+  // Handle CORS preflight requests
+  if (req.method === 'OPTIONS') {
+    return new Response('ok', { headers: corsHeaders })
+  }
+
+  try {
+    const { report_id } = await req.json()
+    
+    // Validate required input
+    if (!report_id) {
+      return new Response(JSON.stringify({ error: "Missing 'report_id' in request body" }), {
         headers: { ...corsHeaders, 'Content-Type': 'application/json' },
         status: 400,
       })
@@ -224,30 +629,152 @@ Deno.serve(async (req) => {
       Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? ''
     )
 
-    const { data, error } = await supabaseAdminClient
-      .from('demo_reports')
-      .select('content')
-      .eq('report_type', report_type)
+    console.log(`Starting report regeneration for report ID: ${report_id}`)
+
+    // Step 1: Get the report basic data
+    const { data: reportData, error: reportError } = await supabaseAdminClient
+      .from('reports')
+      .select('id, project_id, status, report_type')
+      .eq('id', report_id)
+      .eq('report_type', 'foundation')
       .single()
 
-    if (error) {
-      throw new Error(`Failed to fetch demo report: ${error.message}`)
+    if (reportError) {
+      throw new Error(`Failed to fetch report: ${reportError.message}`)
     }
 
-    if (!data) {
-        return new Response(JSON.stringify({ error: `No demo report found for type: ${report_type}` }), {
-            headers: { ...corsHeaders, 'Content-Type': 'application/json' },
-            status: 404,
-        })
+    if (!reportData) {
+      throw new Error('Report not found or is not a foundation report')
     }
 
-    return new Response(JSON.stringify({ report_content: data.content }), {
+    console.log(`Found report for project ${reportData.project_id}`)
+
+    // Step 2: Get all completed atomic tasks for this report
+    const { data: atomicTasks, error: tasksError } = await supabaseAdminClient
+      .from('atomic_tasks')
+      .select('id, task_index, question, status, result, job_id')
+      .eq('report_id', report_id)
+      .in('status', ['completed', 'failed'])
+      .order('task_index', { ascending: true })
+
+    if (tasksError) {
+      throw new Error(`Failed to fetch atomic tasks: ${tasksError.message}`)
+    }
+
+    if (!atomicTasks || atomicTasks.length === 0) {
+      throw new Error('No completed atomic tasks found for this report. Cannot regenerate without research data.')
+    }
+
+    console.log(`Found ${atomicTasks.length} atomic tasks to synthesize`)
+
+    // Step 3: Get the research plan from the job that created these tasks
+    let researchPlan: string[] = []
+    
+    if (atomicTasks.length > 0 && atomicTasks[0].job_id) {
+      const { data: jobData, error: jobError } = await supabaseAdminClient
+        .from('jobs')
+        .select('payload')
+        .eq('id', atomicTasks[0].job_id)
+        .single()
+      
+      if (jobError) {
+        console.warn(`Could not fetch job data: ${jobError.message}`)
+      } else {
+        researchPlan = jobData?.payload?.research_plan || []
+      }
+    }
+    
+    // Fallback: use the questions from atomic tasks if we don't have the research plan
+    if (researchPlan.length === 0) {
+      console.log('Using atomic task questions as research plan fallback')
+      researchPlan = atomicTasks.map(task => task.question)
+    }
+
+    console.log(`Using research plan with ${researchPlan.length} questions`)
+
+    // Step 4: Combine the atomic task results
+    const combinedReportTexts = atomicTasks.map((task, index) => {
+      const question = researchPlan[task.task_index] || `Research Task ${task.task_index + 1}`
+      const reportText = task.result?.report_text || '[This research task failed to produce data.]'
+      
+      return `## Research Task ${task.task_index + 1}: ${question}\n\n${reportText}`
+    })
+
+    const rawData = combinedReportTexts.join('\n\n---\n\n')
+    
+    console.log(`Combined raw data: ${rawData.length} characters`)
+    console.log(`Raw data preview:`, rawData.substring(0, 300))
+
+    // Step 5: Synthesize the report
+    const openRouterApiKey = Deno.env.get('OPENROUTER_API_KEY')
+    if (!openRouterApiKey) {
+      throw new Error('OPENROUTER_API_KEY not found in environment')
+    }
+
+    const synthesisPrompt = SYNTHESIZER_META_PROMPT.replace('{raw_data}', rawData)
+    
+    console.log('Starting synthesis with AI...')
+    
+    const synthesisResponse = await fetch("https://openrouter.ai/api/v1/chat/completions", {
+      method: 'POST',
+      headers: { 
+        'Authorization': `Bearer ${openRouterApiKey}`, 
+        'Content-Type': 'application/json' 
+      },
+      body: JSON.stringify({
+        model: "google/gemini-2.5-flash",
+        messages: [{ role: "user", content: synthesisPrompt }],
+      }),
+    })
+    
+    if (!synthesisResponse.ok) {
+      const errorText = await synthesisResponse.text()
+      throw new Error(`Synthesis API failed: ${synthesisResponse.status} ${synthesisResponse.statusText} - ${errorText}`)
+    }
+    
+    const synthesisAiResponse = await synthesisResponse.json()
+    const finalReportContent = synthesisAiResponse.choices[0]?.message?.content
+    
+    if (!finalReportContent) {
+      throw new Error('Synthesizer returned empty content')
+    }
+
+    console.log('Synthesis completed successfully')
+
+    // Step 6: Update the report with the new content
+    const { error: updateError } = await supabaseAdminClient
+      .from('reports')
+      .update({
+        final_report: finalReportContent,
+        status: 'complete'
+      })
+      .eq('id', report_id)
+
+    if (updateError) {
+      throw new Error(`Failed to update report: ${updateError.message}`)
+    }
+
+    console.log(`Report ${report_id} regenerated successfully`)
+
+    return new Response(JSON.stringify({ 
+      message: 'Report regenerated successfully',
+      report_id: report_id,
+      atomic_tasks_used: atomicTasks.length,
+      final_report: finalReportContent
+    }), {
       headers: { ...corsHeaders, 'Content-Type': 'application/json' },
       status: 200,
     })
 
-  } catch (error) {
-    return new Response(JSON.stringify({ error: error.message }), {
+  } catch (error: any) {
+    console.error('Error in regenerate-report function:', error)
+    console.error('Error stack:', error.stack)
+    
+    return new Response(JSON.stringify({ 
+      error: error.message,
+      details: error.stack,
+      timestamp: new Date().toISOString()
+    }), {
       headers: { ...corsHeaders, 'Content-Type': 'application/json' },
       status: 500,
     })
@@ -255,49 +782,403 @@ Deno.serve(async (req) => {
 })
 </file>
 
-<file path="supabase/migrations/20250923120000_create_demo_reports.sql">
--- Create the table to hold our curated demo reports
-CREATE TABLE public.demo_reports (
-    id bigint GENERATED BY DEFAULT AS IDENTITY PRIMARY KEY,
-    report_type text NOT NULL UNIQUE, -- 'foundation' or 'gap_analysis'
-    content text NOT NULL,
-    created_at timestamptz DEFAULT now() NOT NULL
-);
+<file path="test-atomic-tasks.bat">
+@echo off
+echo Testing atomic task processing...
+echo.
 
--- Add a comment for clarity
-COMMENT ON TABLE public.demo_reports IS 'Stores curated, high-quality reports for a realistic demo mode.';
+echo 1. Checking for pending atomic tasks...
+curl -X POST "http://127.0.0.1:54321/functions/v1/process-pending-tasks" ^
+  -H "Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZS1kZW1vIiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImV4cCI6MTk4MzgxMjk5Nn0.EGIM96RAZx35lJzdJsyH-qQwv8Hdp7fsn3W0YpN81IU" ^
+  -H "Content-Type: application/json"
 
--- Insert the high-quality Foundation Report example
-INSERT INTO public.demo_reports (report_type, content)
-VALUES (
-    'foundation',
-    '# Market Research Pack: AI-Powered Strategic Workforce Optimization Platforms
+echo.
+echo.
+echo 2. Testing Next.js API connection...
+curl -X POST "http://localhost:3000/api/process-atomic-tasks" ^
+  -H "Authorization: Bearer development-key" ^
+  -H "Content-Type: application/json" ^
+  -d "{}"
 
-## Executive Summary
-
-The strategic workforce planning landscape is undergoing a profound transformation, shifting from traditional, reactive Human Capital Management (HCM) systems to sophisticated, AI-driven platforms. This evolution is fueled by organizations'' urgent need to integrate internal talent data with external labor market intelligence, enabling predictive insights for talent acquisition, development, and deployment. The global market for AI in HR was valued at approximately $3.25 billion in 2023 and is projected to reach $15.24 billion by 2030, reflecting a robust 24.8% Compound Annual Growth Rate (CAGR). Talent intelligence software specifically is forecasted to grow from $3.12 billion in 2024 to $8.72 billion by 2033, at a 12.2% CAGR.
-
-Key market drivers include the critical need to automate routine HR tasks (reducing time-to-fill positions by up to 85%), the imperative for skills-based talent management (over 60% of companies prioritize skills analysis), and the power of predictive analytics to forecast needs and reduce turnover (by up to 174%). However, significant headwinds persist, primarily around data privacy and compliance (a barrier for 60-75% of organizations), integration complexity with legacy HR systems, and inherent AI bias concerns (flagged by 25-35%).'
-);
-
--- Insert the high-quality Gap Analysis Report example
-INSERT INTO public.demo_reports (report_type, content)
-VALUES (
-    'gap_analysis',
-    '# Strategic Workforce Intelligence Platform Adoption: Depth Report
-
-## Executive Summary
-
-Global enterprises, while recognizing the critical importance of data-driven workforce planning, overwhelmingly prefer leveraging and enhancing existing "good enough" solutions—such as internal BI teams and enhanced Human Capital Management (HCM) analytics—over adopting dedicated Strategic Workforce Intelligence (SWI) platforms. This preference stems from significant barriers including prohibitive costs, complex implementation, organizational readiness gaps, and data quality concerns.
-
-Companies like Google, Microsoft, and IBM exemplify this trend, achieving sophisticated workforce intelligence through internal development and strategic enhancements to their HCM ecosystems. Sector-specific analysis reveals that technology firms often build proprietary solutions, financial services prioritize control due to regulatory demands, healthcare organizations opt for targeted solutions due to budget constraints, and manufacturing firms enhance existing ERP and HCM systems.
-
-Despite a growing market for workforce analytics (projected to reach $5.94 billion by 2032), much of this growth is absorbed by cloud-based analytics enhancements and internal capability building, rather than dedicated platform adoption. Enterprises are increasingly drawn to process mining, cloud-based analytics, and skills-based workforce planning as strategic alternatives, as they offer flexibility, cost-effectiveness, and less organizational disruption.'
-);
+echo.
+echo.
+echo Test complete!
+pause
 </file>
 
-<file path=".gitignore">
-node_modules
+<file path="test-regenerate.bat">
+@echo off
+echo Testing report regeneration...
+echo.
+
+echo Enter the Report ID to regenerate (you can find this in the database or browser console):
+set /p REPORT_ID=
+
+echo.
+echo Attempting to regenerate report %REPORT_ID%...
+echo.
+
+curl -X POST "http://127.0.0.1:54321/functions/v1/regenerate-report" ^
+  -H "Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZS1kZW1vIiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImV4cCI6MTk4MzgxMjk5Nn0.EGIM96RAZx35lJzdJsyH-qQwv8Hdp7fsn3W0YpN81IU" ^
+  -H "Content-Type: application/json" ^
+  -d "{\"report_id\":\"%REPORT_ID%\"}"
+
+echo.
+echo.
+echo Test complete!
+pause
+</file>
+
+<file path=".env.local">
+NEXT_PUBLIC_SUPABASE_URL=http://127.0.0.1:54321
+OPENROUTER_API_KEY=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
+NEXT_PUBLIC_SUPABASE_ANON_KEY=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZS1kZW1vIiwicm9sZSI6ImFub24iLCJleHAiOjE5ODM4MTI5OTZ9.CRXP1A7WOeoJeXxjNni43kdQwgnWNReilDMblYTn_I0
+SUPABASE_SERVICE_ROLE_KEY=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZS1kZW1vIiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImV4cCI6MTk4MzgxMjk5Nn0.EGIM96RAZx35lJzdJsyH-qQwv8Hdp7fsn3W0YpN81IU
+INTERNAL_API_KEY=development-key
+NEXT_APP_URL=http://localhost:3000
+</file>
+
+<file path="app/api/process-atomic-tasks/route.ts">
+// app/api/process-atomic-tasks/route.ts
+// This API route processes long-running atomic research tasks without timeout limitations
+
+import { createClient } from '@supabase/supabase-js'
+import { NextResponse } from 'next/server'
+
+// Initialize Supabase admin client
+const supabaseAdmin = createClient(
+  process.env.NEXT_PUBLIC_SUPABASE_URL!,
+  process.env.SUPABASE_SERVICE_ROLE_KEY!
+)
+
+// Store active processing to prevent duplicate processing
+const activeProcessing = new Set<string>()
+
+interface AtomicTask {
+  id: string
+  job_id: number
+  report_id: string
+  task_index: number
+  question: string
+  status: string
+}
+
+async function callPerplexityAPI(question: string, model: string, timeout: number): Promise<string> {
+  const controller = new AbortController()
+  const timeoutId = setTimeout(() => controller.abort(), timeout)
+
+  try {
+    console.log(`[Atomic Task] Attempting research with model: ${model}`)
+    
+    const response = await fetch("https://openrouter.ai/api/v1/chat/completions", {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${process.env.OPENROUTER_API_KEY}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        model: model,
+        messages: [{ role: "user", content: question }],
+      }),
+      signal: controller.signal
+    })
+
+    clearTimeout(timeoutId)
+
+    if (!response.ok) {
+      const errorBody = await response.text()
+      throw new Error(`API request failed: ${response.status} ${response.statusText} - ${errorBody}`)
+    }
+
+    const aiResponse = await response.json()
+    const reportText = aiResponse.choices[0]?.message?.content
+
+    if (!reportText) {
+      throw new Error('No content received from AI model')
+    }
+    
+    console.log(`[Atomic Task] Successfully completed research with model: ${model}`)
+    return reportText
+  } catch (error: any) {
+    clearTimeout(timeoutId)
+    if (error.name === 'AbortError') {
+      throw new Error(`API call to ${model} timed out after ${timeout / 1000}s`)
+    }
+    throw error
+  }
+}
+
+async function processAtomicTask(task: AtomicTask): Promise<void> {
+  // Prevent duplicate processing
+  if (activeProcessing.has(task.id)) {
+    console.log(`[Atomic Task] Task ${task.id} is already being processed`)
+    return
+  }
+
+  activeProcessing.add(task.id)
+
+  try {
+    // Mark task as processing
+    await supabaseAdmin
+      .from('atomic_tasks')
+      .update({ 
+        status: 'processing',
+        started_at: new Date().toISOString()
+      })
+      .eq('id', task.id)
+
+    console.log(`[Atomic Task] Processing task ${task.id}: "${task.question.substring(0, 50)}..."`)
+
+    let reportText: string | null = null
+    const errors: string[] = []
+
+    // 1. Try the powerful, slower model first (5 minutes timeout)
+    try {
+      reportText = await callPerplexityAPI(task.question, "perplexity/sonar-deep-research", 300000)
+    } catch (error: any) {
+      console.warn(`[Atomic Task] Deep research model failed: ${error.message}`)
+      errors.push(error.message)
+      
+      // 2. If it fails, fall back to the faster, reliable model (45s timeout)
+      try {
+        reportText = await callPerplexityAPI(task.question, "perplexity/sonar-pro", 45000)
+      } catch (fallbackError: any) {
+        console.warn(`[Atomic Task] Fallback model failed: ${fallbackError.message}`)
+        errors.push(fallbackError.message)
+        
+        // 3. If that also fails, use the fastest, general-purpose model (25s timeout)
+        try {
+          reportText = await callPerplexityAPI(task.question, "google/gemini-2.5-flash", 25000)
+        } catch (finalFallbackError: any) {
+          console.error(`[Atomic Task] All models failed for task ${task.id}`)
+          errors.push(finalFallbackError.message)
+        }
+      }
+    }
+
+    // Update task with result or failure
+    if (reportText) {
+      await supabaseAdmin
+        .from('atomic_tasks')
+        .update({ 
+          status: 'completed',
+          result: { report_text: reportText },
+          completed_at: new Date().toISOString()
+        })
+        .eq('id', task.id)
+
+      console.log(`[Atomic Task] Task ${task.id} completed successfully`)
+    } else {
+      const errorMessage = `All models failed: ${errors.join('; ')}`
+      await supabaseAdmin
+        .from('atomic_tasks')
+        .update({ 
+          status: 'failed',
+          error_message: errorMessage,
+          result: { report_text: '[This research task failed after multiple attempts due to API errors or timeouts. No data is available for this section.]' },
+          completed_at: new Date().toISOString()
+        })
+        .eq('id', task.id)
+
+      console.error(`[Atomic Task] Task ${task.id} failed: ${errorMessage}`)
+    }
+
+  } catch (error: any) {
+    console.error(`[Atomic Task] Unexpected error processing task ${task.id}:`, error)
+    
+    await supabaseAdmin
+      .from('atomic_tasks')
+      .update({ 
+        status: 'failed',
+        error_message: error.message,
+        result: { report_text: '[This research task failed due to an unexpected error. No data is available for this section.]' },
+        completed_at: new Date().toISOString()
+      })
+      .eq('id', task.id)
+  } finally {
+    activeProcessing.delete(task.id)
+  }
+}
+
+// Main API route handler
+export async function POST(request: Request) {
+  try {
+    // Optional: Add authentication check here
+    const authHeader = request.headers.get('authorization')
+    if (authHeader !== `Bearer ${process.env.INTERNAL_API_KEY}`) {
+      // For now, we'll allow any requests, but in production you should secure this
+      // return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+    }
+
+    // First, let's check all tasks to debug
+    const { data: allTasks, error: allError } = await supabaseAdmin
+      .from('atomic_tasks')
+      .select('*')
+      .order('created_at', { ascending: false })
+      .limit(10)
+    
+    console.log('[Atomic Task Processor] All tasks in DB:', allTasks?.length || 0, 'tasks found')
+    if (allTasks && allTasks.length > 0) {
+      console.log('[Atomic Task Processor] Task statuses:', allTasks.map(t => ({ id: t.id.substring(0, 8), status: t.status })))
+    }
+
+    // Fetch pending atomic tasks (limit to prevent overwhelming the system)
+    const { data: pendingTasks, error: fetchError } = await supabaseAdmin
+      .from('atomic_tasks')
+      .select('*')
+      .eq('status', 'pending')
+      .order('created_at', { ascending: true })
+      .limit(5) // Process up to 5 tasks concurrently
+
+    if (fetchError) {
+      console.error('[Atomic Task Processor] Error fetching pending tasks:', fetchError)
+      return NextResponse.json({ error: 'Failed to fetch tasks' }, { status: 500 })
+    }
+
+    if (!pendingTasks || pendingTasks.length === 0) {
+      console.log('[Atomic Task Processor] No pending tasks found')
+      return NextResponse.json({ message: 'No pending tasks', processed: 0 })
+    }
+
+    console.log(`[Atomic Task Processor] Found ${pendingTasks.length} pending tasks`)
+
+    // Process tasks concurrently
+    const processingPromises = pendingTasks.map(task => processAtomicTask(task))
+    await Promise.allSettled(processingPromises)
+
+    return NextResponse.json({ 
+      message: 'Tasks processed',
+      processed: pendingTasks.length 
+    })
+
+  } catch (error: any) {
+    console.error('[Atomic Task Processor] Unexpected error:', error)
+    return NextResponse.json({ error: error.message }, { status: 500 })
+  }
+}
+
+// Health check endpoint
+export async function GET() {
+  return NextResponse.json({ 
+    status: 'healthy',
+    activeProcessing: activeProcessing.size 
+  })
+}
+</file>
+
+<file path="app/api/reset-stuck-tasks/route.ts">
+// app/api/reset-stuck-tasks/route.ts
+// API route to reset stuck tasks that are in 'processing' status for too long
+
+import { createClient } from '@supabase/supabase-js'
+import { NextResponse } from 'next/server'
+
+const supabaseAdmin = createClient(
+  process.env.NEXT_PUBLIC_SUPABASE_URL!,
+  process.env.SUPABASE_SERVICE_ROLE_KEY!
+)
+
+export async function POST(request: Request) {
+  try {
+    // Find tasks that have been processing for more than 10 minutes
+    const tenMinutesAgo = new Date(Date.now() - 10 * 60 * 1000).toISOString()
+    
+    const { data: stuckTasks, error: fetchError } = await supabaseAdmin
+      .from('atomic_tasks')
+      .select('*')
+      .eq('status', 'processing')
+      .or(`started_at.is.null,started_at.lt.${tenMinutesAgo}`)
+
+    if (fetchError) {
+      console.error('Error fetching stuck tasks:', fetchError)
+      return NextResponse.json({ error: 'Failed to fetch stuck tasks' }, { status: 500 })
+    }
+
+    if (!stuckTasks || stuckTasks.length === 0) {
+      return NextResponse.json({ message: 'No stuck tasks found', reset: 0 })
+    }
+
+    console.log(`Found ${stuckTasks.length} stuck tasks, resetting to pending...`)
+
+    // Reset stuck tasks back to pending
+    const { error: updateError } = await supabaseAdmin
+      .from('atomic_tasks')
+      .update({ 
+        status: 'pending',
+        started_at: null,
+        error_message: null
+      })
+      .eq('status', 'processing')
+      .or(`started_at.is.null,started_at.lt.${tenMinutesAgo}`)
+
+    if (updateError) {
+      console.error('Error resetting stuck tasks:', updateError)
+      return NextResponse.json({ error: 'Failed to reset stuck tasks' }, { status: 500 })
+    }
+
+    return NextResponse.json({ 
+      message: `Reset ${stuckTasks.length} stuck tasks to pending`,
+      reset: stuckTasks.length 
+    })
+
+  } catch (error: any) {
+    console.error('Unexpected error:', error)
+    return NextResponse.json({ error: error.message }, { status: 500 })
+  }
+}
+
+export async function GET() {
+  // Check for stuck tasks without resetting them
+  const tenMinutesAgo = new Date(Date.now() - 10 * 60 * 1000).toISOString()
+  
+  const { data: stuckTasks, error } = await supabaseAdmin
+    .from('atomic_tasks')
+    .select('id, status, started_at')
+    .eq('status', 'processing')
+    .or(`started_at.is.null,started_at.lt.${tenMinutesAgo}`)
+
+  if (error) {
+    return NextResponse.json({ error: 'Failed to check stuck tasks' }, { status: 500 })
+  }
+
+  return NextResponse.json({ 
+    stuckTasks: stuckTasks?.length || 0,
+    tasks: stuckTasks || []
+  })
+}
+</file>
+
+<file path="app/api/start-processor/route.ts">
+// app/api/start-processor/route.ts
+// API route to manually start/stop the atomic task processor
+
+import { NextResponse } from 'next/server'
+import atomicTaskProcessor from '@/lib/atomicTaskProcessor'
+
+export async function POST(request: Request) {
+  try {
+    const { action } = await request.json()
+    
+    if (action === 'start') {
+      await atomicTaskProcessor.start()
+      return NextResponse.json({ message: 'Processor started' })
+    } else if (action === 'stop') {
+      atomicTaskProcessor.stop()
+      return NextResponse.json({ message: 'Processor stopped' })
+    } else {
+      return NextResponse.json({ error: 'Invalid action' }, { status: 400 })
+    }
+  } catch (error: any) {
+    return NextResponse.json({ error: error.message }, { status: 500 })
+  }
+}
+
+export async function GET() {
+  return NextResponse.json({ 
+    status: 'Ready to process',
+    info: 'POST with {"action": "start"} to begin processing'
+  })
+}
 </file>
 
 <file path="app/globals.css">
@@ -335,51 +1216,114 @@ body {
 }
 </file>
 
-<file path="app/layout.tsx">
-import type { Metadata } from "next"
-import { Inter } from "next/font/google"
-import "./globals.css"
+<file path="components/BackgroundProcessor.tsx">
+'use client'
 
-const inter = Inter({ subsets: ["latin"] })
+import { useEffect, useRef } from 'react'
 
-export const metadata: Metadata = {
-  title: "Research Co-pilot",
-  description: "AI-powered research assistant for comprehensive analysis",
-}
+export default function BackgroundProcessor() {
+  const intervalRef = useRef<NodeJS.Timeout | null>(null)
+  const isProcessingRef = useRef(false)
 
-export default function RootLayout({
-  children,
-}: {
-  children: React.ReactNode
-}) {
-  return (
-    <html lang="en" className="dark">
-      <body className={inter.className}>{children}</body>
-    </html>
-  )
+  useEffect(() => {
+    const processAtomicTasks = async () => {
+      // Prevent concurrent processing
+      if (isProcessingRef.current) return
+      
+      isProcessingRef.current = true
+      
+      try {
+        const response = await fetch('/api/process-atomic-tasks', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({})
+        })
+
+        if (response.ok) {
+          const result = await response.json()
+          if (result.processed > 0) {
+            console.log(`[Background Processor] Processed ${result.processed} atomic tasks`)
+          }
+        }
+      } catch (error) {
+        console.error('[Background Processor] Error:', error)
+      } finally {
+        isProcessingRef.current = false
+      }
+    }
+
+    // Process immediately on mount
+    processAtomicTasks()
+
+    // Then set up interval for continuous processing
+    intervalRef.current = setInterval(processAtomicTasks, 10000) // Check every 10 seconds
+
+    // Cleanup on unmount
+    return () => {
+      if (intervalRef.current) {
+        clearInterval(intervalRef.current)
+      }
+    }
+  }, [])
+
+  // This component doesn't render anything visible
+  return null
 }
 </file>
 
-<file path="components/JobStatusDisplay.tsx">
+<file path="components/LiveProgressDisplay.tsx">
+// components/LiveProgressDisplay.tsx
+'use client'
+
 import React, { useState, useEffect, useRef } from 'react';
 import { supabase } from '@/lib/supabaseClient';
-import { CheckCircle, Loader, AlertTriangle, FileText } from 'lucide-react';
+import { CheckCircle, Loader, AlertTriangle, FileText, ChevronDown, Clock, Zap } from 'lucide-react';
+import ReactMarkdown from 'react-markdown';
+import remarkGfm from 'remark-gfm';
 
-interface JobStatusDisplayProps {
+interface AtomicTask {
+  id: string;
+  task_index: number;
+  question: string;
+  status: 'pending' | 'processing' | 'completed' | 'failed';
+  result?: { report_text: string };
+  error_message?: string;
+  started_at?: string;
+  completed_at?: string;
+}
+
+interface LiveProgressDisplayProps {
   reportId: string;
   onComplete: (finalReport: string) => void;
   onError: (errorMessage: string) => void;
 }
 
-const JobStatusDisplay: React.FC<JobStatusDisplayProps> = ({ reportId, onComplete, onError }) => {
+const LiveProgressDisplay: React.FC<LiveProgressDisplayProps> = ({ reportId, onComplete, onError }) => {
   const [jobStatus, setJobStatus] = useState<string | null>(null);
   const [jobPayload, setJobPayload] = useState<any>(null);
+  const [atomicTasks, setAtomicTasks] = useState<AtomicTask[]>([]);
   const [error, setError] = useState<string | null>(null);
   const pollingRef = useRef<NodeJS.Timeout | null>(null);
+  const isCompleteRef = useRef(false);
+  const lastPollRef = useRef<number>(0);
 
   useEffect(() => {
-    const pollJobStatus = async () => {
+    const pollStatus = async () => {
+      // Stop polling if the job has already completed or failed
+      if (isCompleteRef.current) {
+        if (pollingRef.current) {
+          clearTimeout(pollingRef.current);
+          pollingRef.current = null;
+        }
+        return;
+      }
+
+      const now = Date.now();
+      
       try {
+        // Fetch job status
         const { data: jobData, error: jobError } = await supabase
           .from('jobs')
           .select('status, payload, error_log')
@@ -388,20 +1332,47 @@ const JobStatusDisplay: React.FC<JobStatusDisplayProps> = ({ reportId, onComplet
           .limit(1)
           .single();
 
-        if (jobError && jobError.code !== 'PGRST116') { // PGRST116 = no rows found
-          throw jobError;
-        }
+        if (jobError && jobError.code !== 'PGRST116') throw jobError;
 
         if (jobData) {
           setJobStatus(jobData.status);
           setJobPayload(jobData.payload);
 
+          // Only fetch atomic tasks if we haven't polled recently or if there are active tasks
+          const shouldFetchTasks = 
+            now - lastPollRef.current > 2000 || // Always fetch if it's been more than 2 seconds
+            atomicTasks.some(task => task.status === 'processing') || // Fetch if any tasks are processing
+            atomicTasks.length === 0; // Fetch if we don't have tasks yet
+
+          if (shouldFetchTasks) {
+            const { data: tasksData, error: tasksError } = await supabase
+              .from('atomic_tasks')
+              .select('id, task_index, question, status, result, error_message, started_at, completed_at')
+              .eq('report_id', reportId)
+              .order('task_index', { ascending: true });
+
+            if (tasksError) {
+              console.error('Error fetching atomic tasks:', tasksError);
+            } else if (tasksData) {
+              // Only update if tasks have actually changed
+              const tasksChanged = JSON.stringify(tasksData) !== JSON.stringify(atomicTasks);
+              if (tasksChanged) {
+                setAtomicTasks(tasksData);
+              }
+            }
+            lastPollRef.current = now;
+          }
+
           if (jobData.status === 'failed') {
+            isCompleteRef.current = true;
             setError(jobData.error_log || 'An unknown error occurred.');
-            if (pollingRef.current) clearInterval(pollingRef.current);
             onError(jobData.error_log || 'An unknown error occurred.');
+            if (pollingRef.current) {
+              clearTimeout(pollingRef.current);
+              pollingRef.current = null;
+            }
           } else if (jobData.status === 'completed') {
-            // Job is done, now fetch the final report
+            isCompleteRef.current = true;
             const { data: reportData, error: reportError } = await supabase
               .from('reports')
               .select('final_report')
@@ -409,95 +1380,271 @@ const JobStatusDisplay: React.FC<JobStatusDisplayProps> = ({ reportId, onComplet
               .single();
             
             if (reportError) throw reportError;
-
-            if (pollingRef.current) clearInterval(pollingRef.current);
             onComplete(reportData.final_report);
+            if (pollingRef.current) {
+              clearTimeout(pollingRef.current);
+              pollingRef.current = null;
+            }
           }
         }
       } catch (err) {
         console.error('Polling error:', err);
-        setError('Failed to get job status.');
-        if (pollingRef.current) clearInterval(pollingRef.current);
-        onError('Failed to get job status.');
+        setError('Failed to get status.');
+        onError('Failed to get status.');
+        if (pollingRef.current) {
+          clearTimeout(pollingRef.current);
+          pollingRef.current = null;
+        }
       }
     };
 
-    // Poll immediately and then set an interval
-    pollJobStatus();
-    pollingRef.current = setInterval(pollJobStatus, 4000); // Poll every 4 seconds
+    // Adaptive polling strategy
+    const startPolling = () => {
+      pollStatus(); // Poll immediately
+      
+      // Use adaptive intervals based on activity
+      const getPollingInterval = () => {
+        const processingCount = atomicTasks.filter(task => task.status === 'processing').length;
+        if (processingCount > 0) {
+          return 2000; // 2 seconds when tasks are actively processing
+        } else if (atomicTasks.length > 0 && atomicTasks.some(task => task.status === 'pending')) {
+          return 4000; // 4 seconds when tasks are pending
+        } else {
+          return 6000; // 6 seconds for general status checks
+        }
+      };
 
-    // Cleanup on unmount
+      const scheduleNextPoll = () => {
+        if (!isCompleteRef.current) {
+          pollingRef.current = setTimeout(() => {
+            pollStatus().then(() => scheduleNextPoll());
+          }, getPollingInterval());
+        }
+      };
+
+      scheduleNextPoll();
+    };
+
+    startPolling();
+
     return () => {
       if (pollingRef.current) {
-        clearInterval(pollingRef.current);
+        clearTimeout(pollingRef.current);
+        pollingRef.current = null;
       }
     };
   }, [reportId, onComplete, onError]);
 
-  const renderStatus = () => {
-    if (error) {
-      return (
-        <div className="flex items-center space-x-3 text-red-400">
-          <AlertTriangle className="w-8 h-8" />
-          <div>
-            <p className="font-semibold">Research Failed</p>
-            <p className="text-sm text-red-300">{error}</p>
-          </div>
+  const renderOverallStatus = () => {
+    if (error) return (
+      <div className="flex items-center space-x-3 text-red-400">
+        <AlertTriangle className="w-8 h-8 flex-shrink-0" />
+        <div>
+          <p className="font-semibold">Research Failed</p>
+          <p className="text-sm text-red-300">{error}</p>
         </div>
-      );
-    }
+      </div>
+    );
 
-    if (jobStatus === 'completed') {
-      return (
-        <div className="flex items-center space-x-3 text-green-400">
-          <CheckCircle className="w-8 h-8" />
-          <p className="font-semibold">Report Generated</p>
-        </div>
-      );
-    }
+    if (jobStatus === 'completed') return (
+      <div className="flex items-center space-x-3 text-green-400">
+        <CheckCircle className="w-8 h-8 flex-shrink-0" />
+        <p className="font-semibold">Report Generation Complete</p>
+      </div>
+    );
+
+    // Calculate progress based on atomic tasks
+    const completedTasks = atomicTasks.filter(task => task.status === 'completed').length;
+    const processingTasks = atomicTasks.filter(task => task.status === 'processing').length;
+    const failedTasks = atomicTasks.filter(task => task.status === 'failed').length;
+    const totalTasks = atomicTasks.length;
 
     let progressMessage = 'Initializing research...';
+    let statusColor = 'text-blue-300';
+    
     if (jobStatus === 'pending') {
       progressMessage = 'Job is queued and waiting to be processed...';
-    } else if (jobStatus === 'in_progress') {
-      if (jobPayload?.research_plan && jobPayload?.next_task_index !== undefined) {
-        const totalTasks = jobPayload.research_plan.length;
-        const currentTask = jobPayload.next_task_index;
-        if (currentTask >= totalTasks) {
-          progressMessage = 'All research tasks complete. Synthesizing final report...';
-        } else {
-          progressMessage = `Researching task ${currentTask + 1} of ${totalTasks}...`;
-        }
+    } else if (totalTasks > 0) {
+      if (completedTasks === totalTasks) {
+        progressMessage = `All ${totalTasks} research tasks complete. Synthesizing final report...`;
+        statusColor = 'text-green-300';
+      } else if (processingTasks > 0) {
+        progressMessage = `${completedTasks}/${totalTasks} tasks complete, ${processingTasks} in progress`;
+        statusColor = 'text-blue-300';
+      } else if (completedTasks > 0) {
+        progressMessage = `${completedTasks}/${totalTasks} tasks complete`;
+        statusColor = 'text-blue-300';
       } else {
-        progressMessage = 'Generating research plan...';
+        progressMessage = `${totalTasks} research tasks planned, starting execution...`;
       }
+      
+      if (failedTasks > 0) {
+        progressMessage += ` (${failedTasks} failed)`;
+        statusColor = 'text-yellow-300';
+      }
+    } else if (jobStatus === 'in_progress') {
+      progressMessage = 'Generating research plan...';
     }
 
     return (
-      <div className="flex items-center space-x-3 text-blue-300">
-        <Loader className="w-8 h-8 animate-spin" />
+      <div className={`flex items-center space-x-3 ${statusColor}`}>
+        <Loader className="w-8 h-8 animate-spin flex-shrink-0" />
         <div>
-            <p className="font-semibold">{progressMessage}</p>
-            <p className="text-sm text-blue-400">This may take several minutes. You can safely leave this page.</p>
+          <p className="font-semibold">{progressMessage}</p>
+          <p className="text-sm opacity-75">
+            {totalTasks > 0 ? 'Reports appear below as tasks complete in parallel' : 'Results will appear below as they complete.'}
+          </p>
         </div>
       </div>
     );
   };
 
+  // Helper function to format timestamps
+  const formatTimestamp = (timestamp?: string) => {
+    if (!timestamp) return '';
+    const date = new Date(timestamp);
+    return date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+  };
+
+  // Helper function to calculate duration
+  const calculateDuration = (startTime?: string, endTime?: string) => {
+    if (!startTime || !endTime) return '';
+    const start = new Date(startTime);
+    const end = new Date(endTime);
+    const diffMs = end.getTime() - start.getTime();
+    const diffSec = Math.floor(diffMs / 1000);
+    const minutes = Math.floor(diffSec / 60);
+    const seconds = diffSec % 60;
+    return minutes > 0 ? `${minutes}m ${seconds}s` : `${seconds}s`;
+  };
+
   return (
     <div className="bg-zinc-900 border border-zinc-800 rounded-lg p-6 my-6 animate-in fade-in duration-500">
-      <div className="flex items-center justify-between mb-4">
-          <h3 className="text-lg font-semibold text-zinc-100 flex items-center space-x-2">
-            <FileText className="w-5 h-5" />
-            <span>Research Progress</span>
-          </h3>
+      <div className="mb-4">
+        {renderOverallStatus()}
       </div>
-      {renderStatus()}
+
+      {atomicTasks.length > 0 && (
+        <div className="border-t border-zinc-700 pt-4 mt-4">
+          <div className="flex items-center justify-between mb-3">
+            <h4 className="text-md font-semibold text-zinc-200">Atomic Research Progress</h4>
+            <div className="text-xs text-zinc-400 flex items-center space-x-4">
+              <span className="flex items-center">
+                <CheckCircle className="w-3 h-3 mr-1" />
+                {atomicTasks.filter(t => t.status === 'completed').length} completed
+              </span>
+              <span className="flex items-center">
+                <Loader className="w-3 h-3 mr-1" />
+                {atomicTasks.filter(t => t.status === 'processing').length} processing
+              </span>
+              <span className="flex items-center">
+                <FileText className="w-3 h-3 mr-1" />
+                {atomicTasks.filter(t => t.status === 'pending').length} pending
+              </span>
+            </div>
+          </div>
+          <div className="space-y-2">
+            {atomicTasks
+              .sort((a, b) => {
+                // Sort by completion time (completed tasks first, in order of completion)
+                if (a.status === 'completed' && b.status === 'completed') {
+                  return (a.completed_at || '').localeCompare(b.completed_at || '');
+                }
+                if (a.status === 'completed') return -1;
+                if (b.status === 'completed') return 1;
+                
+                // Then by processing status
+                if (a.status === 'processing' && b.status !== 'processing') return -1;
+                if (b.status === 'processing' && a.status !== 'processing') return 1;
+                
+                // Finally by task index
+                return a.task_index - b.task_index;
+              })
+              .map((task) => {
+                const isComplete = task.status === 'completed';
+                const isProcessing = task.status === 'processing';
+                const isFailed = task.status === 'failed';
+
+                return (
+                  <details 
+                    key={task.id} 
+                    className={`border rounded-lg group transition-all duration-300 ${
+                      isComplete 
+                        ? 'bg-green-900/20 border-green-800/50 animate-in fade-in duration-500' 
+                        : isProcessing 
+                        ? 'bg-blue-900/20 border-blue-800/50' 
+                        : isFailed 
+                        ? 'bg-red-900/20 border-red-800/50' 
+                        : 'bg-zinc-800/50 border-zinc-700'
+                    }`}
+                    {...(isComplete ? { open: true } : {})}
+                  >
+                    <summary className="flex items-center justify-between p-3 cursor-pointer list-none">
+                      <div className="flex items-center flex-1 min-w-0">
+                        <div className="flex items-center mr-3">
+                          {isComplete ? (
+                            <CheckCircle className="w-5 h-5 text-green-500 flex-shrink-0" />
+                          ) : isProcessing ? (
+                            <Loader className="w-5 h-5 text-blue-400 animate-spin flex-shrink-0" />
+                          ) : isFailed ? (
+                            <AlertTriangle className="w-5 h-5 text-red-500 flex-shrink-0" />
+                          ) : (
+                            <FileText className="w-5 h-5 text-zinc-500 flex-shrink-0" />
+                          )}
+                        </div>
+                        <div className="flex-1 min-w-0">
+                          <p className="text-sm text-zinc-300 truncate pr-2">{task.question}</p>
+                          <div className="flex items-center space-x-3 mt-1 text-xs text-zinc-500">
+                            <span>Task #{task.task_index + 1}</span>
+                            {task.started_at && (
+                              <span className="flex items-center">
+                                <Clock className="w-3 h-3 mr-1" />
+                                Started {formatTimestamp(task.started_at)}
+                              </span>
+                            )}
+                            {task.completed_at && (
+                              <span className="flex items-center text-green-400">
+                                <Zap className="w-3 h-3 mr-1" />
+                                Completed in {calculateDuration(task.started_at, task.completed_at)}
+                              </span>
+                            )}
+                          </div>
+                        </div>
+                      </div>
+                      <ChevronDown className="w-5 h-5 text-zinc-400 group-open:rotate-180 transition-transform flex-shrink-0" />
+                    </summary>
+                    <div className="p-4 border-t border-current/20">
+                      {isComplete && task.result?.report_text ? (
+                        <div className="prose prose-invert prose-sm max-w-none prose-p:text-zinc-300">
+                          <ReactMarkdown remarkPlugins={[remarkGfm]}>
+                            {task.result.report_text}
+                          </ReactMarkdown>
+                        </div>
+                      ) : isFailed ? (
+                        <div className="text-sm text-red-300">
+                          <p className="font-medium">Task Failed</p>
+                          <p className="text-red-400 mt-1">{task.error_message || 'Unknown error occurred'}</p>
+                        </div>
+                      ) : isProcessing ? (
+                        <p className="text-sm text-blue-300 italic flex items-center">
+                          <Loader className="w-4 h-4 animate-spin mr-2" />
+                          Research currently in progress...
+                        </p>
+                      ) : (
+                        <p className="text-sm text-zinc-400 italic">This task is pending execution.</p>
+                      )}
+                    </div>
+                  </details>
+                );
+              })}
+          </div>
+        </div>
+      )}
     </div>
   );
 };
 
-export default JobStatusDisplay;
+export default LiveProgressDisplay;
 </file>
 
 <file path="components/LoadingSpinner.tsx">
@@ -535,16 +1682,23 @@ export default function LoadingSpinner({ message, size = 'md' }: LoadingSpinnerP
 import React from 'react'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
-import { FileText, Copy, Check } from 'lucide-react'
+import { FileText, Copy, Check, RefreshCw } from 'lucide-react'
 
 interface ReportDisplayProps {
   title: string
   content: string
   className?: string
+  onRegenerate?: () => void
+  isRegenerating?: boolean
 }
 
-export default function ReportDisplay({ title, content, className = '' }: ReportDisplayProps) {
+export default function ReportDisplay({ title, content, className = '', onRegenerate, isRegenerating = false }: ReportDisplayProps) {
   const [copied, setCopied] = React.useState(false)
+  
+  // Debug logging
+  React.useEffect(() => {
+    console.log('ReportDisplay props:', { title, hasOnRegenerate: !!onRegenerate, isRegenerating })
+  }, [title, onRegenerate, isRegenerating])
 
   const handleCopy = async () => {
     try {
@@ -563,23 +1717,39 @@ export default function ReportDisplay({ title, content, className = '' }: Report
           <FileText className="w-5 h-5 text-blue-400" />
           <h3 className="text-lg font-semibold text-zinc-100">{title}</h3>
         </div>
-        <button
-          onClick={handleCopy}
-          className="flex items-center space-x-2 px-3 py-1.5 rounded-lg bg-zinc-700 hover:bg-zinc-600 transition-colors"
-          aria-label="Copy report content"
-        >
-          {copied ? (
-            <>
-              <Check className="w-4 h-4 text-green-400" />
-              <span className="text-sm text-green-400">Copied!</span>
-            </>
-          ) : (
-            <>
-              <Copy className="w-4 h-4 text-zinc-400" />
-              <span className="text-sm text-zinc-400">Copy</span>
-            </>
+        <div className="flex items-center space-x-2">
+          {/* Always show regenerate button for Foundation Research Reports for debugging */}
+          {(onRegenerate || title === "Foundation Research Report") && (
+            <button
+              onClick={onRegenerate || (() => console.log('Regenerate clicked but no handler'))}
+              disabled={isRegenerating}
+              className="flex items-center space-x-2 px-3 py-1.5 rounded-lg bg-blue-600 hover:bg-blue-500 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+              aria-label="Regenerate report"
+            >
+              <RefreshCw className={`w-4 h-4 text-white ${isRegenerating ? 'animate-spin' : ''}`} />
+              <span className="text-sm text-white">
+                {isRegenerating ? 'Regenerating...' : 'Regenerate'}
+              </span>
+            </button>
           )}
-        </button>
+          <button
+            onClick={handleCopy}
+            className="flex items-center space-x-2 px-3 py-1.5 rounded-lg bg-zinc-700 hover:bg-zinc-600 transition-colors"
+            aria-label="Copy report content"
+          >
+            {copied ? (
+              <>
+                <Check className="w-4 h-4 text-green-400" />
+                <span className="text-sm text-green-400">Copied!</span>
+              </>
+            ) : (
+              <>
+                <Copy className="w-4 h-4 text-zinc-400" />
+                <span className="text-sm text-zinc-400">Copy</span>
+              </>
+            )}
+          </button>
+        </div>
       </div>
       <div className="p-6 max-h-[600px] overflow-y-auto">
         <div className="prose prose-invert prose-zinc max-w-none">
@@ -883,6 +2053,87 @@ Deno.serve(async (req) => {
 })
 </file>
 
+<file path="lib/atomicTaskProcessor.ts">
+// lib/atomicTaskProcessor.ts
+// Background processor for atomic research tasks
+
+class AtomicTaskProcessor {
+  private isRunning: boolean = false
+  private intervalId: NodeJS.Timeout | null = null
+  private processingInterval: number = 10000 // Check every 10 seconds
+
+  async start() {
+    if (this.isRunning) {
+      console.log('[AtomicTaskProcessor] Already running')
+      return
+    }
+
+    console.log('[AtomicTaskProcessor] Starting background processor')
+    this.isRunning = true
+
+    // Process immediately on start
+    await this.processTasks()
+
+    // Then set up interval for continuous processing
+    this.intervalId = setInterval(async () => {
+      if (this.isRunning) {
+        await this.processTasks()
+      }
+    }, this.processingInterval)
+  }
+
+  stop() {
+    console.log('[AtomicTaskProcessor] Stopping background processor')
+    this.isRunning = false
+    
+    if (this.intervalId) {
+      clearInterval(this.intervalId)
+      this.intervalId = null
+    }
+  }
+
+  private async processTasks() {
+    try {
+      // Use the internal API route to process tasks
+      const response = await fetch('/api/process-atomic-tasks', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({})
+      })
+
+      if (!response.ok) {
+        console.error('[AtomicTaskProcessor] Failed to trigger task processing:', response.statusText)
+        return
+      }
+
+      const result = await response.json()
+      if (result.processed > 0) {
+        console.log(`[AtomicTaskProcessor] Processed ${result.processed} tasks`)
+      }
+    } catch (error) {
+      console.error('[AtomicTaskProcessor] Error processing tasks:', error)
+    }
+  }
+
+  setInterval(ms: number) {
+    this.processingInterval = ms
+    
+    // Restart with new interval if running
+    if (this.isRunning) {
+      this.stop()
+      this.start()
+    }
+  }
+}
+
+// Create singleton instance
+const atomicTaskProcessor = new AtomicTaskProcessor()
+
+export default atomicTaskProcessor
+</file>
+
 <file path="lib/supabaseClient.ts">
 // lib/supabaseClient.ts
 import { createClient } from '@supabase/supabase-js'
@@ -916,6 +2167,18 @@ const nextConfig = {
 export default nextConfig
 </file>
 
+<file path="payload-execute.json">
+{
+    "report_id": "af86d252-35c0-4c00-9e34-5188c9a44d35"
+  }
+</file>
+
+<file path="payload.json">
+{
+    "project_id": "bc1df002-a889-4b1d-8c1a-f99d67081475"
+  }
+</file>
+
 <file path="postcss.config.mjs">
 /** @type {import('postcss-load-config').Config} */
 const config = {
@@ -926,6 +2189,45 @@ const config = {
 }
 
 export default config
+</file>
+
+<file path="start-dev.bat">
+@echo off
+REM This script starts all necessary development servers for the Research Co-pilot.
+REM It will open three separate terminal windows.
+
+echo =======================================================
+echo  Starting Research Co-pilot Development Environment
+echo =======================================================
+echo.
+
+REM --- Step 1: Start the main Supabase backend ---
+echo [1/3] Starting Supabase Backend (Database, etc.)...
+start "Supabase Backend" npx supabase start
+
+REM Wait for 5 seconds to give the backend a moment to initialize.
+echo Waiting 5 seconds...
+timeout /t 5 /nobreak >nul
+
+REM --- Step 2: Start the Supabase Functions server ---
+echo [2/3] Starting Supabase Functions Server...
+REM IMPORTANT: This includes the --env-file flag we perfected.
+start "Supabase Functions" npx supabase functions serve --env-file ./supabase/.env.local 
+
+REM Wait for 5 seconds.
+echo Waiting 5 seconds...
+timeout /t 5 /nobreak >nul
+
+REM --- Step 3: Start the Next.js frontend server ---
+echo [3/3] Starting Next.js Frontend...
+start "Next.js Frontend" npm run dev
+
+echo.
+echo =======================================================
+echo  All services have been launched in new windows!
+echo =======================================================
+echo.
+pause
 </file>
 
 <file path="supabase_tables.sql">
@@ -949,6 +2251,44 @@ CREATE TABLE public.reports (
   final_report text NULL,
   status text NOT NULL DEFAULT 'pending'::text
 );
+</file>
+
+<file path="supabase/.branches/_current_branch">
+main
+</file>
+
+<file path="supabase/.env.local">
+OPENROUTER_API_KEY=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
+NEXT_APP_URL=http://localhost:3000
+INTERNAL_API_KEY=development-key
+</file>
+
+<file path="supabase/.temp/cli-latest">
+v2.45.5
+</file>
+
+<file path="supabase/.temp/gotrue-version">
+v2.179.0
+</file>
+
+<file path="supabase/.temp/pooler-url">
+postgresql://postgres.xhfttsgovolytgdexkyd:[YOUR-PASSWORD]@aws-1-us-east-2.pooler.supabase.com:6543/postgres
+</file>
+
+<file path="supabase/.temp/postgres-version">
+17.6.1.005
+</file>
+
+<file path="supabase/.temp/project-ref">
+xhfttsgovolytgdexkyd
+</file>
+
+<file path="supabase/.temp/rest-version">
+v13.0.5
+</file>
+
+<file path="supabase/.temp/storage-version">
+custom-metadata
 </file>
 
 <file path="supabase/functions/_archive_execute-research_simple/.npmrc">
@@ -1185,6 +2525,64 @@ Deno.serve(async (req) => {
 })
 </file>
 
+<file path="supabase/functions/get-demo-report/index.ts">
+// supabase/functions/get-demo-report/index.ts
+
+import { createClient } from 'https://esm.sh/@supabase/supabase-js@2'
+import { corsHeaders } from '../_shared/cors.ts'
+
+Deno.serve(async (req) => {
+  // Handle CORS preflight requests
+  if (req.method === 'OPTIONS') {
+    return new Response('ok', { headers: corsHeaders })
+  }
+
+  try {
+    const { report_type } = await req.json()
+
+    if (!report_type) {
+      return new Response(JSON.stringify({ error: "Missing 'report_type' in request body" }), {
+        headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+        status: 400,
+      })
+    }
+
+    const supabaseAdminClient = createClient(
+      Deno.env.get('SUPABASE_URL') ?? '',
+      Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? ''
+    )
+
+    const { data, error } = await supabaseAdminClient
+      .from('demo_reports')
+      .select('content')
+      .eq('report_type', report_type)
+      .single()
+
+    if (error) {
+      throw new Error(`Failed to fetch demo report: ${error.message}`)
+    }
+
+    if (!data) {
+        return new Response(JSON.stringify({ error: `No demo report found for type: ${report_type}` }), {
+            headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+            status: 404,
+        })
+    }
+
+    return new Response(JSON.stringify({ report_content: data.content }), {
+      headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+      status: 200,
+    })
+
+  } catch (error) {
+    return new Response(JSON.stringify({ error: error.message }), {
+      headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+      status: 500,
+    })
+  }
+})
+</file>
+
 <file path="supabase/functions/queue-gap-analysis-job/deno.json">
 {
   "imports": {
@@ -1283,6 +2681,510 @@ Deno.serve(async (req) => {
       headers: { ...corsHeaders, 'Content-Type': 'application/json' },
       status: 500,
     })
+  }
+})
+</file>
+
+<file path="supabase/functions/research-worker-v2/index.ts">
+// supabase/functions/research-worker-v2/index.ts
+// Modified version that creates atomic tasks for the Next.js app to process
+
+import { createClient, SupabaseClient } from 'https://esm.sh/@supabase/supabase-js@2'
+import { corsHeaders } from '../_shared/cors.ts'
+
+// --- Types ---
+interface Job {
+  id: number;
+  job_type: 'execute_research' | 'execute_gap_analysis';
+  status: 'pending' | 'in_progress' | 'completed' | 'failed';
+  payload: {
+    report_id: string;
+    research_plan?: string[];
+    atomic_results?: any[];
+    next_task_index?: number;
+    foundation_report?: string;
+    first_draft?: string;
+    custom_research_plan?: string[];
+  };
+}
+
+interface AtomicTask {
+  id: string;
+  job_id: number;
+  report_id: string;
+  task_index: number;
+  question: string;
+  status: 'pending' | 'processing' | 'completed' | 'failed';
+  result?: { report_text: string };
+}
+
+// --- Constants ---
+const SYNTHESIZER_META_PROMPT = `You are a Senior Partner at a top-tier strategy consulting firm, renowned for your ability to synthesize complex information into clear, decision-grade reports. You have been given a collection of raw research findings from your junior analyst team.
+
+Your task is to read all the provided raw data and transform it into a single, cohesive, client-ready "Market Research Pack."
+
+You must adhere to the following structure and principles:
+1.  **Executive Summary:** Begin with a concise, powerful "Executive Summary" section that synthesizes the most critical, overarching findings from the entire document.
+2.  **Cohesive Narrative:** Weave the individual research sections together into a smooth, logical narrative. Do not simply list the sections; ensure they flow together.
+3.  **Professional Formatting:** Use clear Markdown formatting, including headers, sub-headers, bold text for key terms, and tables for comparative data.
+4.  **Synthesize, Do Not Invent:** You MUST only use the information present in the "Raw Research Data" provided below. Do not introduce any outside knowledge or facts. Your job is to synthesize, not to conduct new research.
+
+**CRITICAL SOURCE AND BIBLIOGRAPHY REQUIREMENTS:**
+5.  **Complete Source Citations:** You MUST cite ALL sources with full URLs throughout the report. Use inline citations in the format: [Source Name](https://full-url.com)
+6.  **Preserve All URLs:** Extract and include EVERY URL mentioned in the raw research data. Do not lose or omit any source URLs.
+7.  **Complete Bibliography:** End your report with a comprehensive "Bibliography" section that lists ALL sources used, formatted as:
+    - [Source Name](https://full-url.com) - Brief description if available
+8.  **No Placeholder Citations:** Never use [1], [2], etc. Always use the actual URLs and source names.
+9.  **Source Verification:** If a claim has multiple sources, cite ALL of them, not just one.
+
+**REQUIRED FINAL SECTION:**
+Your report MUST end with:
+
+## Bibliography
+
+[List ALL sources found in the raw data as clickable markdown links with full URLs]
+
+Here is the raw data from your team:
+---
+{raw_data}
+---`
+
+// --- Helper Functions ---
+
+/**
+ * Updates the status of a job and the associated report in case of a failure.
+ */
+async function handleFailure(supabaseAdminClient: SupabaseClient, job: Job, error: any) {
+  console.error(`Job ${job.id} failed:`, error)
+  await supabaseAdminClient.from('jobs').update({
+    status: 'failed',
+    error_log: error.message,
+    last_ran_at: new Date().toISOString()
+  }).eq('id', job.id)
+  
+  await supabaseAdminClient.from('reports').update({
+    status: 'error'
+  }).eq('id', job.payload.report_id)
+}
+
+/**
+ * Triggers the Next.js app to process pending atomic tasks
+ */
+async function triggerTaskProcessor(): Promise<void> {
+  try {
+    // Get the app URL from environment or use localhost for development
+    const appUrl = Deno.env.get('NEXT_APP_URL') || 'http://host.docker.internal:3000'
+    const internalApiKey = Deno.env.get('INTERNAL_API_KEY') || 'development-key'
+    
+    console.log(`Attempting to trigger task processor at ${appUrl}/api/process-atomic-tasks`)
+    console.log(`Using NEXT_APP_URL: ${Deno.env.get('NEXT_APP_URL')} (fallback: http://host.docker.internal:3000)`)
+    console.log(`Using INTERNAL_API_KEY: ${internalApiKey ? 'SET' : 'NOT SET'}`)
+    
+    const response = await fetch(`${appUrl}/api/process-atomic-tasks`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${internalApiKey}`
+      },
+      body: JSON.stringify({})
+    })
+
+    if (!response.ok) {
+      const errorText = await response.text()
+      console.error(`Task processor trigger failed: ${response.status} ${response.statusText}`)
+      console.error(`Response body: ${errorText}`)
+      throw new Error(`HTTP ${response.status}: ${errorText}`)
+    } else {
+      const result = await response.json()
+      console.log(`Task processor triggered successfully: ${result.message}`)
+    }
+  } catch (error) {
+    // Don't fail the job if we can't trigger the processor
+    // The processor might be running on a schedule anyway
+    console.error(`Could not reach Next.js app at ${Deno.env.get('NEXT_APP_URL') || 'http://host.docker.internal:3000'}: ${error.message}`)
+    console.warn(`Tasks are queued and will be processed when the Next.js app starts or if the processor runs on schedule.`)
+    console.warn(`If this error persists, check that:`)
+    console.warn(`1. Next.js app is running on the correct port`)
+    console.warn(`2. NEXT_APP_URL environment variable is correct`)
+    console.warn(`3. INTERNAL_API_KEY matches between environments`)
+  }
+}
+
+/**
+ * STAGE 1: Generate the research plan for a new job.
+ */
+async function executePlanningStage(supabaseAdminClient: SupabaseClient, job: Job) {
+  console.log(`[Job ${job.id}] Starting planning stage for report ${job.payload.report_id}`)
+  
+  // Mark job as in_progress
+  await supabaseAdminClient.from('jobs').update({
+    status: 'in_progress',
+    last_ran_at: new Date().toISOString()
+  }).eq('id', job.id)
+  
+  let research_plan: string[]
+  
+  if (job.job_type === 'execute_gap_analysis') {
+    // For gap analysis jobs, generate plan using gap analysis function
+    const planResponse = await supabaseAdminClient.functions.invoke('generate-gap-analysis-brief', {
+      body: {
+        foundation_report: job.payload.foundation_report,
+        first_draft: job.payload.first_draft
+      }
+    })
+    
+    if (planResponse.error) {
+      throw new Error(`Gap analysis planning failed: ${planResponse.error.message}`)
+    }
+    
+    research_plan = planResponse.data.research_plan
+  } else {
+    // For regular research jobs, use existing logic
+    const { data: reportData } = await supabaseAdminClient.from('reports').select('project_id').eq('id', job.payload.report_id).single()
+    const { data: projectData } = await supabaseAdminClient.from('projects').select(`
+      project_context, key_documents_summary, custom_prompt, chapter_templates ( chapter_prompt )
+    `).eq('id', reportData.project_id).single()
+
+    // Check if custom research plan is provided, otherwise generate one
+    research_plan = job.payload.custom_research_plan
+    
+    if (!research_plan) {
+      // Generate the plan
+      const chapterPrompt = projectData.custom_prompt || projectData.chapter_templates?.chapter_prompt || 'No prompt available'
+      const planResponse = await supabaseAdminClient.functions.invoke('generate-research-plan', {
+        body: {
+          project_context: projectData.project_context,
+          documents_summary: projectData.key_documents_summary,
+          chapter_prompt: chapterPrompt
+        }
+      })
+
+      research_plan = planResponse.data.research_plan
+    }
+  }
+  
+  if (!Array.isArray(research_plan) || research_plan.length === 0) {
+    throw new Error('Invalid or empty research plan received')
+  }
+  
+  console.log(`[Job ${job.id}] Planning complete. Generated ${research_plan.length} tasks.`)
+
+  // Create atomic tasks in the database
+  const tasksToCreate = research_plan.map((question, index) => ({
+    job_id: job.id,
+    report_id: job.payload.report_id,
+    task_index: index,
+    question: question,
+    status: 'pending'
+  }))
+
+  console.log(`[Job ${job.id}] Attempting to create ${tasksToCreate.length} atomic tasks:`, JSON.stringify(tasksToCreate, null, 2))
+  
+  const { data: insertResult, error: insertError } = await supabaseAdminClient
+    .from('atomic_tasks')
+    .insert(tasksToCreate)
+    .select()
+
+  if (insertError) {
+    console.error(`[Job ${job.id}] Failed to create atomic tasks:`, insertError)
+    throw new Error(`Failed to create atomic tasks: ${insertError.message}`)
+  }
+
+  console.log(`[Job ${job.id}] Successfully created ${insertResult?.length || 0} atomic tasks:`, insertResult?.map(t => ({ id: t.id.substring(0, 8), status: t.status })))
+
+  // Update job payload
+  await supabaseAdminClient.from('jobs').update({
+    payload: {
+      ...job.payload,
+      research_plan,
+      atomic_results: Array(research_plan.length).fill(null),
+      next_task_index: 0,
+    }
+  }).eq('id', job.id)
+
+  // Trigger the task processor in the Next.js app
+  await triggerTaskProcessor()
+}
+
+/**
+ * Check if all atomic tasks for a job are completed
+ */
+async function checkTasksCompletion(supabaseAdminClient: SupabaseClient, job: Job): Promise<boolean> {
+  const { data: tasks, error } = await supabaseAdminClient
+    .from('atomic_tasks')
+    .select('id, status, result')
+    .eq('job_id', job.id)
+    .order('task_index', { ascending: true })
+
+  if (error) {
+    console.error(`Failed to fetch tasks for job ${job.id}:`, error)
+    return false
+  }
+
+  if (!tasks || tasks.length === 0) {
+    return false
+  }
+
+  // Check if all tasks are completed or failed
+  const allDone = tasks.every(task => 
+    task.status === 'completed' || task.status === 'failed'
+  )
+
+  if (allDone) {
+    // Update job payload with results
+    const atomic_results = tasks.map(task => {
+      if (task.result && typeof task.result === 'object' && task.result.report_text) {
+        return task.result
+      }
+      console.warn(`[Job ${job.id}] Task ${task.id} has no valid result, using fallback`)
+      return { report_text: '[This research task failed to produce data.]' }
+    })
+    
+    console.log(`[Job ${job.id}] Collected ${atomic_results.length} atomic results. Sample:`, 
+      atomic_results.slice(0, 2).map(r => ({ 
+        hasReportText: !!r.report_text, 
+        textLength: r.report_text?.length || 0,
+        preview: r.report_text?.substring(0, 100) || 'No text'
+      })))
+    
+    await supabaseAdminClient.from('jobs').update({
+      payload: {
+        ...job.payload,
+        atomic_results,
+        next_task_index: tasks.length
+      },
+      last_ran_at: new Date().toISOString()
+    }).eq('id', job.id)
+
+    return true
+  }
+
+  // If some tasks are still pending, trigger the processor again
+  const pendingCount = tasks.filter(t => t.status === 'pending').length
+  if (pendingCount > 0) {
+    console.log(`[Job ${job.id}] ${pendingCount} tasks still pending, triggering processor`)
+    await triggerTaskProcessor()
+  }
+
+  return false
+}
+
+/**
+ * REUSABLE HELPER: Synthesize raw research data into final report
+ */
+async function runSynthesis(supabaseAdminClient: SupabaseClient, rawData: string): Promise<string> {
+  const openRouterApiKey = Deno.env.get('OPENROUTER_API_KEY')
+  const synthesisPrompt = SYNTHESIZER_META_PROMPT.replace('{raw_data}', rawData)
+  
+  const synthesisResponse = await fetch("https://openrouter.ai/api/v1/chat/completions", {
+    method: 'POST',
+    headers: { 'Authorization': `Bearer ${openRouterApiKey}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      model: "google/gemini-2.5-flash",
+      messages: [{ role: "user", content: synthesisPrompt }],
+    }),
+  })
+  
+  if (!synthesisResponse.ok) {
+    throw new Error(`Synthesis API failed: ${await synthesisResponse.text()}`)
+  }
+  
+  const synthesisAiResponse = await synthesisResponse.json()
+  const finalReportContent = synthesisAiResponse.choices[0].message.content
+  
+  if (!finalReportContent) {
+    throw new Error('Synthesizer returned empty content.')
+  }
+  
+  // Return the narrative report directly (no JSON parsing needed)
+  return finalReportContent
+}
+
+/**
+ * STAGE 2: Monitor task completion and proceed to synthesis when ready
+ */
+async function executeResearchStage(supabaseAdminClient: SupabaseClient, job: Job) {
+  const { report_id } = job.payload
+  
+  console.log(`[Job ${job.id}] Checking task completion status`)
+
+  // Check if all tasks are completed
+  const allTasksCompleted = await checkTasksCompletion(supabaseAdminClient, job)
+
+  if (!allTasksCompleted) {
+    // Tasks are still processing, update last_ran_at to prevent timeout
+    await supabaseAdminClient.from('jobs').update({
+      last_ran_at: new Date().toISOString()
+    }).eq('id', job.id)
+    
+    console.log(`[Job ${job.id}] Tasks still processing, will check again later`)
+    return
+  }
+
+  // All tasks are completed, proceed to synthesis
+  await executeSynthesisStage(supabaseAdminClient, job)
+}
+
+/**
+ * STAGE 3: Synthesize the final report when all tasks are complete.
+ */
+async function executeSynthesisStage(supabaseAdminClient: SupabaseClient, job: Job) {
+  const { report_id, research_plan, atomic_results } = job.payload
+  console.log(`[Job ${job.id}] All tasks complete. Starting synthesis stage.`)
+  
+  console.log(`[Job ${job.id}] Starting synthesis with ${atomic_results?.length || 0} atomic results`)
+  console.log(`[Job ${job.id}] Atomic results sample:`, 
+    atomic_results?.slice(0, 2).map(r => ({ 
+      hasReportText: !!r?.report_text, 
+      textLength: r?.report_text?.length || 0,
+      preview: r?.report_text?.substring(0, 150) || 'No text'
+    })))
+
+  // Combine results
+  const combinedReportTexts = atomic_results.map((result, index) => {
+    const reportText = result?.report_text || `[This research task failed to produce data.]`
+    return `## Research Task ${index + 1}: ${research_plan[index]}\n\n${reportText}`
+  })
+  const rawData = combinedReportTexts.join('\n\n---\n\n')
+  
+  console.log(`[Job ${job.id}] Raw data length: ${rawData.length} characters`)
+  console.log(`[Job ${job.id}] Raw data preview:`, rawData.substring(0, 500))
+
+  // Use the reusable synthesis helper
+  const finalReport = await runSynthesis(supabaseAdminClient, rawData)
+
+  console.log(`[Job ${job.id}] Synthesis complete. Saving final report.`)
+  
+  // Save final report
+  await supabaseAdminClient.from('reports').update({
+    final_report: finalReport,
+    status: 'complete'
+  }).eq('id', report_id)
+
+  // Mark job as completed
+  await supabaseAdminClient.from('jobs').update({
+    status: 'completed',
+    last_ran_at: new Date().toISOString()
+  }).eq('id', job.id)
+}
+
+/**
+ * NEW: Execute gap analysis workflow using the new task-based approach
+ */
+async function executeGapAnalysisWorkflow(supabaseAdminClient: SupabaseClient, job: Job) {
+  const { report_id } = job.payload
+  console.log(`[Job ${job.id}] Checking gap analysis task completion`)
+
+  // Check if all tasks are completed
+  const allTasksCompleted = await checkTasksCompletion(supabaseAdminClient, job)
+
+  if (!allTasksCompleted) {
+    // Tasks are still processing
+    await supabaseAdminClient.from('jobs').update({
+      last_ran_at: new Date().toISOString()
+    }).eq('id', job.id)
+    
+    console.log(`[Job ${job.id}] Gap analysis tasks still processing`)
+    return
+  }
+
+  // All tasks completed, proceed to synthesis
+  const { research_plan, atomic_results } = job.payload
+  
+  console.log(`[Job ${job.id}] Starting synthesis with ${atomic_results?.length || 0} atomic results`)
+  console.log(`[Job ${job.id}] Atomic results sample:`, 
+    atomic_results?.slice(0, 2).map(r => ({ 
+      hasReportText: !!r?.report_text, 
+      textLength: r?.report_text?.length || 0,
+      preview: r?.report_text?.substring(0, 150) || 'No text'
+    })))
+  
+  const combinedReportTexts = atomic_results.map((result, index) => {
+    const reportText = result?.report_text || `[This research task failed to produce data.]`
+    return `## Research Task ${index + 1}: ${research_plan[index]}\n\n${reportText}`
+  })
+  const rawData = combinedReportTexts.join('\n\n---\n\n')
+  
+  console.log(`[Job ${job.id}] Raw data length: ${rawData.length} characters`)
+  console.log(`[Job ${job.id}] Raw data preview:`, rawData.substring(0, 500))
+
+  console.log(`[Job ${job.id}] Synthesizing final gap analysis report...`)
+  const finalReport = await runSynthesis(supabaseAdminClient, rawData)
+
+  console.log(`[Job ${job.id}] Gap analysis complete. Saving final report.`)
+  
+  await supabaseAdminClient.from('reports').update({
+    final_report: finalReport,
+    status: 'complete'
+  }).eq('id', report_id)
+
+  await supabaseAdminClient.from('jobs').update({
+    status: 'completed',
+    last_ran_at: new Date().toISOString()
+  }).eq('id', job.id)
+}
+
+// --- Main Handler ---
+
+Deno.serve(async (req) => {
+  if (req.method === 'OPTIONS') return new Response('ok', { headers: corsHeaders })
+  
+  const supabaseAdminClient = createClient(
+    Deno.env.get('SUPABASE_URL') ?? '',
+    Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? ''
+  )
+
+  // 1. Find a job to work on. Prioritize in-progress, then pending.
+  let { data: job, error } = await supabaseAdminClient.from('jobs').select('*').eq('status', 'in_progress').in('job_type', ['execute_research', 'execute_gap_analysis']).order('last_ran_at', { ascending: true }).limit(1).maybeSingle()
+  
+  if (!job) {
+    ({ data: job, error } = await supabaseAdminClient.from('jobs').select('*').eq('status', 'pending').in('job_type', ['execute_research', 'execute_gap_analysis']).order('created_at', { ascending: true }).limit(1).maybeSingle())
+  }
+  
+  if (error) {
+    console.error('Failed to fetch job:', error)
+    return new Response(JSON.stringify({ error: 'Failed to fetch job' }), { status: 500, headers: { ...corsHeaders, 'Content-Type': 'application/json' } })
+  }
+  
+  if (!job) {
+    console.log('No pending or in-progress jobs found.')
+    return new Response(JSON.stringify({ message: 'No jobs to process' }), { status: 200, headers: { ...corsHeaders, 'Content-Type': 'application/json' } })
+  }
+  
+  // 2. Execute the correct workflow based on job type and status
+  try {
+    const { status, payload, job_type } = job
+    
+    if (status === 'pending') {
+      // Create atomic tasks and start processing
+      await executePlanningStage(supabaseAdminClient, job)
+    } else if (status === 'in_progress') {
+      if (job_type === 'execute_gap_analysis') {
+        // Gap analysis workflow
+        if (!payload.research_plan) {
+          // First time processing, need to create tasks
+          await executePlanningStage(supabaseAdminClient, job)
+        } else {
+          // Check task completion
+          await executeGapAnalysisWorkflow(supabaseAdminClient, job)
+        }
+      } else {
+        // Regular research workflow
+        if (!payload.research_plan) {
+          // First time processing, need to create tasks
+          await executePlanningStage(supabaseAdminClient, job)
+        } else {
+          // Check task completion
+          await executeResearchStage(supabaseAdminClient, job)
+        }
+      }
+    }
+    
+    return new Response(JSON.stringify({ message: `Successfully processed job ${job.id}` }), { status: 200, headers: { ...corsHeaders, 'Content-Type': 'application/json' } })
+
+  } catch (e) {
+    await handleFailure(supabaseAdminClient, job, e)
+    return new Response(JSON.stringify({ error: `Failed to process job ${job.id}: ${e.message}` }), { status: 500, headers: { ...corsHeaders, 'Content-Type': 'application/json' } })
   }
 })
 </file>
@@ -1891,6 +3793,190 @@ GRANT EXECUTE ON FUNCTION trigger_research_worker() TO postgres;
 GRANT EXECUTE ON FUNCTION trigger_research_worker() TO service_role;
 </file>
 
+<file path="supabase/migrations/20250923120000_create_demo_reports.sql">
+-- Create the table to hold our curated demo reports
+CREATE TABLE public.demo_reports (
+    id bigint GENERATED BY DEFAULT AS IDENTITY PRIMARY KEY,
+    report_type text NOT NULL UNIQUE, -- 'foundation' or 'gap_analysis'
+    content text NOT NULL,
+    created_at timestamptz DEFAULT now() NOT NULL
+);
+
+-- Add a comment for clarity
+COMMENT ON TABLE public.demo_reports IS 'Stores curated, high-quality reports for a realistic demo mode.';
+
+-- Insert the high-quality Foundation Report example
+INSERT INTO public.demo_reports (report_type, content)
+VALUES (
+    'foundation',
+    '# Market Research Pack: AI-Powered Strategic Workforce Optimization Platforms
+
+## Executive Summary
+
+The strategic workforce planning landscape is undergoing a profound transformation, shifting from traditional, reactive Human Capital Management (HCM) systems to sophisticated, AI-driven platforms. This evolution is fueled by organizations'' urgent need to integrate internal talent data with external labor market intelligence, enabling predictive insights for talent acquisition, development, and deployment. The global market for AI in HR was valued at approximately $3.25 billion in 2023 and is projected to reach $15.24 billion by 2030, reflecting a robust 24.8% Compound Annual Growth Rate (CAGR). Talent intelligence software specifically is forecasted to grow from $3.12 billion in 2024 to $8.72 billion by 2033, at a 12.2% CAGR.
+
+Key market drivers include the critical need to automate routine HR tasks (reducing time-to-fill positions by up to 85%), the imperative for skills-based talent management (over 60% of companies prioritize skills analysis), and the power of predictive analytics to forecast needs and reduce turnover (by up to 174%). However, significant headwinds persist, primarily around data privacy and compliance (a barrier for 60-75% of organizations), integration complexity with legacy HR systems, and inherent AI bias concerns (flagged by 25-35%).'
+);
+
+-- Insert the high-quality Gap Analysis Report example
+INSERT INTO public.demo_reports (report_type, content)
+VALUES (
+    'gap_analysis',
+    '# Strategic Workforce Intelligence Platform Adoption: Depth Report
+
+## Executive Summary
+
+Global enterprises, while recognizing the critical importance of data-driven workforce planning, overwhelmingly prefer leveraging and enhancing existing "good enough" solutions—such as internal BI teams and enhanced Human Capital Management (HCM) analytics—over adopting dedicated Strategic Workforce Intelligence (SWI) platforms. This preference stems from significant barriers including prohibitive costs, complex implementation, organizational readiness gaps, and data quality concerns.
+
+Companies like Google, Microsoft, and IBM exemplify this trend, achieving sophisticated workforce intelligence through internal development and strategic enhancements to their HCM ecosystems. Sector-specific analysis reveals that technology firms often build proprietary solutions, financial services prioritize control due to regulatory demands, healthcare organizations opt for targeted solutions due to budget constraints, and manufacturing firms enhance existing ERP and HCM systems.
+
+Despite a growing market for workforce analytics (projected to reach $5.94 billion by 2032), much of this growth is absorbed by cloud-based analytics enhancements and internal capability building, rather than dedicated platform adoption. Enterprises are increasingly drawn to process mining, cloud-based analytics, and skills-based workforce planning as strategic alternatives, as they offer flexibility, cost-effectiveness, and less organizational disruption.'
+);
+</file>
+
+<file path="supabase/migrations/20250923160000_update_demo_foundation_report.sql">
+-- Update the Foundation Report demo content with improved data
+
+UPDATE public.demo_reports 
+SET content = '# Your New Foundation Report Content Here
+
+## Executive Summary
+
+[Replace this with your improved content]
+
+## Market Analysis
+
+[Your improved market analysis content]
+
+## Key Findings
+
+[Your improved key findings]
+
+## Recommendations
+
+[Your improved recommendations]
+
+'
+WHERE report_type = 'foundation';
+</file>
+
+<file path="supabase/migrations/20250923181000_update_cron_to_v2.sql">
+-- Update the PostgreSQL wrapper function to call research-worker-v2
+CREATE OR REPLACE FUNCTION trigger_research_worker()
+RETURNS void
+LANGUAGE plpgsql
+SECURITY DEFINER
+AS $$
+DECLARE
+    supabase_url text;
+    service_role_key text;
+    response_status integer;
+    response_content text;
+BEGIN
+    -- Get environment variables (these need to be set in your Supabase project)
+    supabase_url := current_setting('app.settings.supabase_url', true);
+    service_role_key := current_setting('app.settings.service_role_key', true);
+    
+    -- Fallback to hardcoded values if settings are not available
+    -- Note: Replace these with your actual Supabase URL in production
+    IF supabase_url IS NULL OR supabase_url = '' THEN
+        supabase_url := 'http://host.docker.internal:54321';  -- Use Docker's internal host address
+    END IF;
+    
+    IF service_role_key IS NULL OR service_role_key = '' THEN
+        -- Use default local development service role key
+        -- In production, this should be configured as a database setting
+        service_role_key := 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZS1kZW1vIiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImV4cCI6MTk4MzgxMjk5Nn0.EGIM96RAZx35lJzdJsyH-qQwv8Hdp7fsn3W0YpN81IU';
+    END IF;
+
+    -- Make HTTP POST request to the research-worker-v2 Edge Function
+    SELECT 
+        status,
+        content
+    INTO 
+        response_status,
+        response_content
+    FROM extensions.http((
+        'POST',
+        supabase_url || '/functions/v1/research-worker-v2',
+        ARRAY[
+            extensions.http_header('Authorization', 'Bearer ' || service_role_key),
+            extensions.http_header('Content-Type', 'application/json')
+        ],
+        'application/json',
+        '{}'
+    )::extensions.http_request);
+
+    -- Log the response for debugging
+    IF response_status >= 400 THEN
+        RAISE WARNING 'Research worker returned error status %: %', response_status, response_content;
+    ELSE
+        RAISE NOTICE 'Research worker completed with status %', response_status;
+    END IF;
+
+EXCEPTION
+    WHEN OTHERS THEN
+        -- Log any errors but don't fail the cron job
+        RAISE WARNING 'Error calling research worker: %', SQLERRM;
+END;
+$$;
+</file>
+
+<file path="supabase/migrations/20250923190000_add_atomic_tasks.sql">
+CREATE TABLE atomic_tasks (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  job_id INTEGER REFERENCES jobs(id),
+  report_id UUID REFERENCES reports(id),
+  task_index INTEGER NOT NULL,
+  question TEXT NOT NULL,
+  status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'processing', 'completed', 'failed')),
+  result JSONB,
+  error_message TEXT,
+  started_at TIMESTAMP WITH TIME ZONE,
+  completed_at TIMESTAMP WITH TIME ZONE,
+  created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+  updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+);
+</file>
+
+<file path="supabase/migrations/20250923190001_add_atomic_tasks_indexes.sql">
+CREATE INDEX idx_atomic_tasks_status ON atomic_tasks(status);
+</file>
+
+<file path="supabase/migrations/20250923190002_add_atomic_tasks_permissions.sql">
+GRANT ALL ON atomic_tasks TO postgres;
+</file>
+
+<file path="supabase/migrations/20250923190003_add_atomic_tasks_permissions2.sql">
+GRANT ALL ON atomic_tasks TO service_role;
+</file>
+
+<file path="supabase/migrations/20250923190004_add_atomic_tasks_permissions3.sql">
+GRANT SELECT, INSERT, UPDATE ON atomic_tasks TO authenticated;
+</file>
+
+<file path="supabase/migrations/20250924000000_add_custom_prompt_support.sql">
+-- Migration to support custom prompts alongside chapter templates
+-- Allow chapter_template_id to be nullable for custom prompts
+ALTER TABLE public.projects
+ALTER COLUMN chapter_template_id DROP NOT NULL;
+
+-- Add a custom_prompt field to store user-defined prompts
+ALTER TABLE public.projects
+ADD COLUMN custom_prompt text NULL;
+
+-- Add a constraint to ensure either chapter_template_id OR custom_prompt is provided
+ALTER TABLE public.projects
+ADD CONSTRAINT projects_prompt_check
+CHECK (
+  (chapter_template_id IS NOT NULL AND custom_prompt IS NULL) OR
+  (chapter_template_id IS NULL AND custom_prompt IS NOT NULL)
+);
+
+-- Add a comment to explain the new constraint
+COMMENT ON CONSTRAINT projects_prompt_check ON public.projects IS 'Ensures either a chapter template or custom prompt is provided, but not both.';
+</file>
+
 <file path="supabase/seed.sql">
 -- CORRECTED supabase/seed.sql
 
@@ -2123,7 +4209,27 @@ List 3-5 critical market assumptions ranked by importance. Propose specific vali
    - Low: Limited data, conflicting signals, or rapid change
 
 5. **Action Orientation**: Every section should inform whether the market opportunity justifies investment and what to validate first.
-Follow the recommended structure strictly and satisfy all criteria. Use information from AVAILABLE_CONTENT_BLOCKS below. You must cite all sources as inline, clickable Markdown links (e.g., "[Source Name](https://example.com)"). Both web research and information from documents must be cited. At the end of the chapter, you must also provide a consolidated, bulleted list of all sources cited under the heading "Sources Used:", with each source formatted as a clickable Markdown link.'
+
+**CRITICAL SOURCE CITATION REQUIREMENTS:**
+Follow the recommended structure strictly and satisfy all criteria. Use information from AVAILABLE_CONTENT_BLOCKS below. 
+
+**MANDATORY SOURCE REQUIREMENTS:**
+- You MUST cite ALL sources with complete, working URLs throughout the report
+- Use inline citations as clickable Markdown links: [Source Name](https://full-complete-url.com)
+- NEVER use placeholder citations like [1], [2], [Source], etc. - always provide the actual full URL
+- Both web research and document information must be cited with complete source details
+- If multiple sources support a claim, cite ALL of them, not just one
+- At the end of the chapter, you MUST provide a comprehensive "Bibliography" section (not just "Sources Used") that lists ALL sources cited in the report
+- Each bibliography entry must be formatted as: [Complete Source Name](https://full-complete-url.com) - Brief description
+- The bibliography must include EVERY source mentioned in the report - do not omit any URLs
+- If you cannot find complete source information, explicitly state "Source details unavailable" rather than using placeholder citations
+
+**REQUIRED FINAL SECTION:**
+End your report with:
+
+## Bibliography
+
+[Comprehensive list of ALL sources with full URLs as clickable Markdown links]'
 )
 ON CONFLICT (name) DO NOTHING;
 </file>
@@ -2179,6 +4285,39 @@ export default config
 }
 </file>
 
+<file path=".gitignore">
+node_modules
+</file>
+
+<file path="app/layout.tsx">
+import type { Metadata } from "next"
+import { Inter } from "next/font/google"
+import "./globals.css"
+import BackgroundProcessor from "@/components/BackgroundProcessor"
+
+const inter = Inter({ subsets: ["latin"] })
+
+export const metadata: Metadata = {
+  title: "Research Co-pilot",
+  description: "AI-powered research assistant for comprehensive analysis",
+}
+
+export default function RootLayout({
+  children,
+}: {
+  children: React.ReactNode
+}) {
+  return (
+    <html lang="en">
+      <body className={inter.className}>
+        {children}
+        <BackgroundProcessor />
+      </body>
+    </html>
+  )
+}
+</file>
+
 <file path="package.json">
 {
   "name": "research-copilot",
@@ -2219,7 +4358,7 @@ export default config
 export const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
   'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
-  'Access-Control-Allow-Methods': 'POST, OPTIONS',
+  'Access-Control-Allow-Methods': 'GET, POST, PUT, DELETE, OPTIONS',
 }
 </file>
 
@@ -2492,7 +4631,7 @@ Deno.serve(async (req) => {
 
     // A more robust API call function with independent timeout
     const callApiWithTimeout = (model: string, timeout: number): Promise<string> => {
-      return new Promise(async (resolve, reject) => {
+      return new Promise((resolve, reject) => {
         const timeoutPromise = new Promise((_, rejectTimeout) => {
           setTimeout(() => rejectTimeout(new Error(`API call to ${model} timed out after ${timeout / 1000}s`)), timeout)
         })
@@ -2508,7 +4647,18 @@ Deno.serve(async (req) => {
               },
               body: JSON.stringify({
                 model: model,
-                messages: [{ role: "user", content: question }],
+                messages: [{ 
+                  role: "user", 
+                  content: `${question}
+
+CRITICAL CITATION REQUIREMENTS:
+- You MUST provide complete source URLs for every fact, statistic, or claim you make
+- Use inline citations with full URLs in brackets: [https://example.com]
+- For each source, include the publication name and date when available
+- At the end of your response, provide a "Sources" section with a numbered list of all URLs used
+- If you cannot find reliable sources, explicitly state "No verifiable public evidence was found"
+- Do NOT use placeholder citations like [1], [2], etc. - always provide the actual URLs` 
+                }],
               }),
             })
 
@@ -2532,13 +4682,9 @@ Deno.serve(async (req) => {
           }
         })()
 
-        try {
-          // Race the API call against the timeout
-          const result = await Promise.race([apiPromise, timeoutPromise])
-          resolve(result as string)
-        } catch (error) {
-          reject(error)
-        }
+        Promise.race([apiPromise, timeoutPromise])
+          .then((result) => resolve(result as string))
+          .catch((error) => reject(error))
       })
     }
 
@@ -2549,21 +4695,21 @@ Deno.serve(async (req) => {
     // 1. Try the powerful, slower model first
     try {
       reportText = await callApiWithTimeout("perplexity/sonar-deep-research", 300000) // 5-minute timeout
-    } catch (error) {
+    } catch (error: any) {
       console.warn(`Deep research model failed: ${error.message}`)
       errors.push(error.message)
       
       // 2. If it fails, fall back to the faster, reliable model
       try {
         reportText = await callApiWithTimeout("perplexity/sonar-pro", 45000) // 45s timeout
-      } catch (fallbackError) {
+      } catch (fallbackError: any) {
         console.warn(`Fallback model failed: ${fallbackError.message}`)
         errors.push(fallbackError.message)
         
         // 3. If that also fails, use the fastest, general-purpose model
         try {
           reportText = await callApiWithTimeout("google/gemini-2.5-flash", 25000) // 25s timeout
-        } catch (finalFallbackError) {
+        } catch (finalFallbackError: any) {
           console.error(`All models failed for question: "${question.substring(0, 50)}..."`)
           errors.push(finalFallbackError.message)
         }
@@ -2582,7 +4728,7 @@ Deno.serve(async (req) => {
       status: 200,
     })
 
-  } catch (error) {
+  } catch (error: any) {
     console.error('Error in execute-atomic-task function:', error)
     
     // Return appropriate error response
@@ -2592,535 +4738,6 @@ Deno.serve(async (req) => {
       headers: { ...corsHeaders, 'Content-Type': 'application/json' },
       status: statusCode,
     })
-  }
-})
-</file>
-
-<file path="supabase/functions/generate-foundation-brief/index.ts">
-// supabase/functions/generate-foundation-brief/index.ts
-
-import { createClient } from 'https://esm.sh/@supabase/supabase-js@2'
-import { corsHeaders } from '../_shared/cors.ts'
-
-const FOUNDATION_META_PROMPT = `
-**CONTEXT:**
-You are a world-class Managing Director at a top-tier strategy consulting firm, kicking off a critical workstream for an investment memo. Your task is to design a comprehensive research brief for your junior analyst team (which is an AI Research Engine).
-
-This brief must be so clear, specific, and well-structured that it leaves no room for ambiguity and ensures the final research output is decision-grade.
-
-**INPUTS YOU WILL BE GIVEN:**
-1.  **{Chapter_Template_Prompt}:** The high-level prompt for the chapter we are building. This defines the overall structure and goals.
-2.  **{Project_Context}:** A summary of the project's background, goals, and any specific client requirements (e.g., budgets, timelines).
-3.  **{Key_Documents_Summary}:** A brief summary of the key documents available in the client's dataroom.
-
-**YOUR TASK:**
-Based on the provided inputs, generate a complete and detailed research prompt (a "brief") for the AI Research Engine. This brief must adhere to the following principles:
-
-1.  **Assign a Persona & Objective:** Start the brief by assigning a clear role to the AI Research Engine (e.g., "You are a market intelligence analyst...").
-2.  **Define Explicit Guardrails:** The brief must include sections for \`Scope\`, \`Timeframe\` (default to 2023-2025), and a \`Source Quality Hierarchy\` (prioritizing official reports, regulatory filings, and reputable industry analysis over general news).
-3.  **Create Structured Research Pillars:** Analyze the {Chapter_Template_Prompt} and {Project_Context} to create 5-7 logical research pillars. These pillars should become the main sections of the research brief.
-4.  **Formulate Evidence-Seeking Questions:** For each pillar, formulate 3-5 specific, evidence-seeking questions that hunt for verifiable **nouns and numbers** (e.g., "What are the *specific names* of competitor products?", "What were the *contract values*?", "What is the *market size in USD*?").
-5.  **Adopt a Skeptical Stance:** Ensure some questions are designed to find "negative space"—gaps, weaknesses, failed attempts, and customer complaints about existing solutions.
-6.  **Prescribe the Output Structure:** The brief must end with a section detailing the required \`Output Requirements\`. Instruct the AI Research Engine to structure its final report with clear Markdown headers for each research pillar and to present tabular data using Markdown tables. It must also include a clear instruction on how to handle missing information (e.g., "If you cannot find specific data, you must explicitly state 'No verifiable public evidence was found'").
-
-**WHAT NOT TO DO:**
-*   Do not write the research report yourself. You are only writing the *prompt* for the research AI.
-*   Do not ask vague questions like "What is the market?" Instead, ask "What was the total addressable market size in USD for workforce analytics in 2024, according to Gartner or Forrester?"
-
-**BEGIN. Generate the research brief now.**
-`
-
-Deno.serve(async (req) => {
-  // Handle CORS preflight requests
-  if (req.method === 'OPTIONS') {
-    return new Response('ok', { headers: corsHeaders })
-  }
-
-  try {
-    console.log('Function started, parsing request body...')
-    const { project_id } = await req.json()
-    console.log('Received project_id:', project_id)
-    
-    if (!project_id) {
-      return new Response(JSON.stringify({ error: "Missing 'project_id' in request body" }), {
-        headers: { ...corsHeaders, 'Content-Type': 'application/json' },
-        status: 400,
-      })
-    }
-
-    // Create a Supabase client with the service_role key
-    const supabaseAdminClient = createClient(
-      Deno.env.get('SUPABASE_URL') ?? '',
-      Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? ''
-    )
-
-    // Fetch project data with chapter template via join
-    console.log('Fetching project data from database...')
-    const { data: projectData, error: projectError } = await supabaseAdminClient
-      .from('projects')
-      .select(`
-        project_context,
-        key_documents_summary,
-        chapter_templates ( chapter_prompt )
-      `)
-      .eq('id', project_id)
-      .single()
-
-    if (projectError) {
-      console.error('Project fetch error:', projectError)
-      throw projectError
-    }
-    if (!projectData) {
-      console.error('No project data found for ID:', project_id)
-      throw new Error('Project not found.')
-    }
-    console.log('Project data fetched successfully')
-
-    // Construct the full prompt
-    let fullPrompt = FOUNDATION_META_PROMPT
-    fullPrompt = fullPrompt.replace('{Chapter_Template_Prompt}', projectData.chapter_templates?.chapter_prompt || 'No chapter template provided.')
-    fullPrompt = fullPrompt.replace('{Project_Context}', projectData.project_context)
-    fullPrompt = fullPrompt.replace('{Key_Documents_Summary}', projectData.key_documents_summary || 'No documents provided.')
-
-    // --- START: DEBUGGING BLOCK ---
-    // Call OpenRouter
-    const openRouterApiKey = Deno.env.get('OPENROUTER_API_KEY')
-
-    // This new line will print the key to our 'functions serve' log
-    console.log(`--- DEBUG --- Attempting to use OpenRouter Key: ${openRouterApiKey}`)
-
-    // This new block will cause a clear error if the key is missing
-    if (!openRouterApiKey) {
-      throw new Error('SERVER ERROR: OPENROUTER_API_KEY was not found in the environment.')
-    }
-    // --- END: DEBUGGING BLOCK ---
-
-    const res = await fetch("https://openrouter.ai/api/v1/chat/completions", {
-      method: 'POST',
-      headers: {
-        'Authorization': `Bearer ${openRouterApiKey}`,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
-        // CORRECTED MODEL NAME: Using the official ID for Gemini 2.5 Pro on OpenRouter
-        model: "google/gemini-2.5-flash",
-        messages: [{ role: "user", content: fullPrompt }],
-      }),
-    })
-
-    if (!res.ok) {
-      const errorBody = await res.text()
-      throw new Error(`OpenRouter API request failed: ${errorBody}`)
-    }
-
-    const aiResponse = await res.json()
-    const generatedBrief = aiResponse.choices[0].message.content
-
-    // Insert the new report
-    const { data: newReport, error: insertError } = await supabaseAdminClient
-      .from('reports')
-      .insert({
-        project_id: project_id,
-        research_brief: generatedBrief,
-        report_type: 'foundation',
-        status: 'pending',
-      })
-      .select('id')
-      .single()
-
-    if (insertError) throw insertError
-
-    // Return success
-    return new Response(JSON.stringify({ report_id: newReport.id }), {
-      headers: { ...corsHeaders, 'Content-Type': 'application/json' },
-      status: 200,
-    })
-
-  } catch (error) {
-    console.error('Function error details:', {
-      message: error.message,
-      stack: error.stack,
-      name: error.name
-    })
-    return new Response(JSON.stringify({ 
-      error: error.message,
-      details: error.stack 
-    }), {
-      headers: { ...corsHeaders, 'Content-Type': 'application/json' },
-      status: 500,
-    })
-  }
-})
-</file>
-
-<file path="supabase/functions/research-worker/index.ts">
-// supabase/functions/research-worker/index.ts
-
-import { createClient, SupabaseClient } from 'https://esm.sh/@supabase/supabase-js@2'
-import { corsHeaders } from '../_shared/cors.ts'
-
-// --- Types ---
-interface Job {
-  id: number;
-  job_type: 'execute_research' | 'execute_gap_analysis';
-  status: 'pending' | 'in_progress' | 'completed' | 'failed';
-  payload: {
-    report_id: string;
-    research_plan?: string[];
-    atomic_results?: any[];
-    next_task_index?: number;
-    foundation_report?: string;
-    first_draft?: string;
-    custom_research_plan?: string[];
-  };
-  // ... other columns
-}
-
-// --- Constants ---
-const SYNTHESIZER_META_PROMPT = `You are a meticulous and analytical synthesis agent. Your sole purpose is to transform a series of raw, atomic research reports into a structured, evidence-backed JSON object.
-
-You will be given a collection of research findings, each corresponding to a specific research task.
-
-Your task is to:
-1.  Read and understand all the provided raw research data.
-2.  Identify distinct, verifiable claims from the data.
-3.  For each claim, you MUST identify and extract the source URL(s) that support it.
-4.  Synthesize related findings into concise, well-formed claims. For example, if one source says the market is $10B and another says it's $12B, a good claim would be "The market size is estimated to be between $10B and $12B."
-5.  Construct a single JSON object as your final output.
-
-**JSON OUTPUT REQUIREMENTS:**
-- The root of the object must be a single key named "claims".
-- The value of "claims" must be an array of objects.
-- Each object in the array must have exactly two keys:
-    1.  \`"claim"\`: A string containing the synthesized, evidence-based statement.
-    2.  \`"evidence"\`: An array of strings, where each string is a complete URL pointing to the source. It is normal for this array to contain only one URL.
-
-**RULES:**
-- You MUST respond with ONLY a valid JSON object. Do not include any explanatory text, markdown formatting, or any characters outside of the JSON structure.
-- Every claim you generate MUST be directly supported by the provided raw data and its sources. DO NOT invent information.
-- If the raw data for a task indicates that no verifiable evidence was found, do not generate a claim for it.
-
-Here is the raw data from the research team:
----
-{raw_data}
----`
-
-// --- Helper Functions ---
-
-/**
- * Updates the status of a job and the associated report in case of a failure.
- */
-async function handleFailure(supabaseAdminClient: SupabaseClient, job: Job, error: any) {
-  console.error(`Job ${job.id} failed:`, error)
-  await supabaseAdminClient.from('jobs').update({
-    status: 'failed',
-    error_log: error.message,
-    last_ran_at: new Date().toISOString()
-  }).eq('id', job.id)
-  
-  await supabaseAdminClient.from('reports').update({
-    status: 'error'
-  }).eq('id', job.payload.report_id)
-}
-
-/**
- * STAGE 1: Generate the research plan for a new job.
- */
-async function executePlanningStage(supabaseAdminClient: SupabaseClient, job: Job) {
-  console.log(`[Job ${job.id}] Starting planning stage for report ${job.payload.report_id}`)
-  
-  // Mark job as in_progress
-  await supabaseAdminClient.from('jobs').update({
-    status: 'in_progress',
-    last_ran_at: new Date().toISOString()
-  }).eq('id', job.id)
-  
-  let research_plan: string[]
-  
-  if (job.job_type === 'execute_gap_analysis') {
-    // For gap analysis jobs, generate plan using gap analysis function
-    const planResponse = await supabaseAdminClient.functions.invoke('generate-gap-analysis-brief', {
-      body: {
-        foundation_report: job.payload.foundation_report,
-        first_draft: job.payload.first_draft
-      }
-    })
-    
-    if (planResponse.error) {
-      throw new Error(`Gap analysis planning failed: ${planResponse.error.message}`)
-    }
-    
-    research_plan = planResponse.data.research_plan
-  } else {
-    // For regular research jobs, use existing logic
-    // Fetch report and project data
-    const { data: reportData } = await supabaseAdminClient.from('reports').select('project_id').eq('id', job.payload.report_id).single()
-    const { data: projectData } = await supabaseAdminClient.from('projects').select(`
-      project_context, key_documents_summary, chapter_templates ( chapter_prompt )
-    `).eq('id', reportData.project_id).single()
-
-    // Check if custom research plan is provided, otherwise generate one
-    research_plan = job.payload.custom_research_plan
-    
-    if (!research_plan) {
-      // Generate the plan
-      const planResponse = await supabaseAdminClient.functions.invoke('generate-research-plan', {
-        body: {
-          project_context: projectData.project_context,
-          documents_summary: projectData.key_documents_summary,
-          chapter_prompt: projectData.chapter_templates.chapter_prompt
-        }
-      })
-
-      research_plan = planResponse.data.research_plan
-    }
-  }
-  
-  if (!Array.isArray(research_plan) || research_plan.length === 0) {
-    throw new Error('Invalid or empty research plan received')
-  }
-  
-  console.log(`[Job ${job.id}] Planning complete. Generated ${research_plan.length} tasks.`)
-
-  // Initialize state and save to job payload
-  await supabaseAdminClient.from('jobs').update({
-    payload: {
-      ...job.payload,
-      research_plan,
-      atomic_results: Array(research_plan.length).fill(null),
-      next_task_index: 0,
-    }
-  }).eq('id', job.id)
-}
-
-/**
- * REUSABLE HELPER: Execute atomic research tasks in parallel with concurrency limit
- */
-async function runAtomicResearch(supabaseAdminClient: SupabaseClient, research_plan: string[]): Promise<any[]> {
-  const CONCURRENCY_LIMIT = 3 // Adjust based on your needs
-  const results: any[] = []
-  
-  // Execute tasks in batches with concurrency limit
-  for (let i = 0; i < research_plan.length; i += CONCURRENCY_LIMIT) {
-    const batch = research_plan.slice(i, i + CONCURRENCY_LIMIT)
-    const batchPromises = batch.map(async (question, batchIndex) => {
-      const taskResponse = await supabaseAdminClient.functions.invoke('execute-atomic-task', {
-        body: { question }
-      })
-      
-      if (taskResponse.error) {
-        console.warn(`Atomic task failed: ${taskResponse.error.message}`)
-        return { report_text: `[Task failed: ${taskResponse.error.message}]` }
-      }
-      
-      return taskResponse.data
-    })
-    
-    const batchResults = await Promise.all(batchPromises)
-    results.push(...batchResults)
-  }
-  
-  return results
-}
-
-/**
- * REUSABLE HELPER: Synthesize raw research data into final report
- */
-async function runSynthesis(supabaseAdminClient: SupabaseClient, rawData: string): Promise<string> {
-  const openRouterApiKey = Deno.env.get('OPENROUTER_API_KEY')
-  const synthesisPrompt = SYNTHESIZER_META_PROMPT.replace('{raw_data}', rawData)
-  
-  const synthesisResponse = await fetch("https://openrouter.ai/api/v1/chat/completions", {
-    method: 'POST',
-    headers: { 'Authorization': `Bearer ${openRouterApiKey}`, 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      model: "google/gemini-2.5-flash",
-      messages: [{ role: "user", content: synthesisPrompt }],
-    }),
-  })
-  
-  if (!synthesisResponse.ok) {
-    throw new Error(`Synthesis API failed: ${await synthesisResponse.text()}`)
-  }
-  
-  const synthesisAiResponse = await synthesisResponse.json()
-  const finalReportContent = synthesisAiResponse.choices[0].message.content
-  
-  if (!finalReportContent) {
-    throw new Error('Synthesizer returned empty content.')
-  }
-  
-  // Parse the JSON response to validate it's properly formatted
-  let parsedReport
-  try {
-    parsedReport = JSON.parse(finalReportContent)
-  } catch (error) {
-    throw new Error(`Synthesizer returned invalid JSON: ${error.message}`)
-  }
-  
-  // Return the JSON as a string for storage in the database
-  return JSON.stringify(parsedReport)
-}
-
-/**
- * STAGE 2: Execute the next single atomic research task (for backward compatibility).
- */
-async function executeResearchStage(supabaseAdminClient: SupabaseClient, job: Job) {
-  const { report_id, research_plan, atomic_results, next_task_index } = job.payload
-  
-  console.log(`[Job ${job.id}] Executing task ${next_task_index + 1} of ${research_plan.length}`)
-  const question = research_plan[next_task_index]
-
-  // Invoke the atomic task function
-  const taskResponse = await supabaseAdminClient.functions.invoke('execute-atomic-task', {
-    body: { question }
-  })
-  
-  if (taskResponse.error) {
-    // Note: A non-2xx response from the function will land here.
-    // The atomic task function is designed to not throw errors but return a structured message,
-    // so this path indicates a more fundamental issue (e.g., the function crashed).
-    console.warn(`[Job ${job.id}] Atomic task invocation failed: ${taskResponse.error.message}`)
-    atomic_results[next_task_index] = { report_text: `[Task invocation failed: ${taskResponse.error.message}]` };
-  } else {
-    atomic_results[next_task_index] = taskResponse.data
-  }
-  
-  // Update payload with the result and increment the index
-  await supabaseAdminClient.from('jobs').update({
-    payload: {
-      ...job.payload,
-      atomic_results,
-      next_task_index: next_task_index + 1,
-    },
-    last_ran_at: new Date().toISOString()
-  }).eq('id', job.id)
-  
-  console.log(`[Job ${job.id}] Task ${next_task_index + 1} complete.`)
-}
-
-/**
- * STAGE 3: Synthesize the final report when all tasks are complete.
- */
-async function executeSynthesisStage(supabaseAdminClient: SupabaseClient, job: Job) {
-  const { report_id, research_plan, atomic_results } = job.payload
-  console.log(`[Job ${job.id}] All tasks complete. Starting synthesis stage.`)
-
-  // Combine results
-  const combinedReportTexts = atomic_results.map((result, index) => {
-    const reportText = result?.report_text || `[This research task failed to produce data.]`
-    return `## Research Task ${index + 1}: ${research_plan[index]}\n\n${reportText}`
-  })
-  const rawData = combinedReportTexts.join('\n\n---\n\n')
-
-  // Use the reusable synthesis helper
-  const finalReport = await runSynthesis(supabaseAdminClient, rawData)
-
-  console.log(`[Job ${job.id}] Synthesis complete. Saving final report.`)
-  
-  // Save final report
-  await supabaseAdminClient.from('reports').update({
-    final_report: finalReport,
-    status: 'complete'
-  }).eq('id', report_id)
-
-  // Mark job as completed
-  await supabaseAdminClient.from('jobs').update({
-    status: 'completed',
-    last_ran_at: new Date().toISOString()
-  }).eq('id', job.id)
-}
-
-/**
- * NEW: Execute gap analysis workflow using reusable components
- */
-async function executeGapAnalysisWorkflow(supabaseAdminClient: SupabaseClient, job: Job) {
-  const { report_id, research_plan } = job.payload
-  console.log(`[Job ${job.id}] Starting gap analysis workflow with ${research_plan.length} tasks.`)
-
-  // Step B: Execute atomic research tasks in parallel
-  console.log(`[Job ${job.id}] Executing atomic research tasks...`)
-  const atomic_results = await runAtomicResearch(supabaseAdminClient, research_plan)
-
-  // Step C: Combine results for synthesis
-  const combinedReportTexts = atomic_results.map((result, index) => {
-    const reportText = result?.report_text || `[This research task failed to produce data.]`
-    return `## Research Task ${index + 1}: ${research_plan[index]}\n\n${reportText}`
-  })
-  const rawData = combinedReportTexts.join('\n\n---\n\n')
-
-  // Step C: Synthesize final report
-  console.log(`[Job ${job.id}] Synthesizing final gap analysis report...`)
-  const finalReport = await runSynthesis(supabaseAdminClient, rawData)
-
-  // Step D: Update database
-  console.log(`[Job ${job.id}] Gap analysis complete. Saving final report.`)
-  
-  await supabaseAdminClient.from('reports').update({
-    final_report: finalReport,
-    status: 'complete'
-  }).eq('id', report_id)
-
-  await supabaseAdminClient.from('jobs').update({
-    status: 'completed',
-    last_ran_at: new Date().toISOString()
-  }).eq('id', job.id)
-}
-
-// --- Main Handler ---
-
-Deno.serve(async (req) => {
-  if (req.method === 'OPTIONS') return new Response('ok', { headers: corsHeaders })
-  
-  const supabaseAdminClient = createClient(
-    Deno.env.get('SUPABASE_URL') ?? '',
-    Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? ''
-  )
-
-  // 1. Find a job to work on. Prioritize in-progress, then pending.
-  let { data: job, error } = await supabaseAdminClient.from('jobs').select('*').eq('status', 'in_progress').in('job_type', ['execute_research', 'execute_gap_analysis']).order('last_ran_at', { ascending: true }).limit(1).maybeSingle()
-  
-  if (!job) {
-    ({ data: job, error } = await supabaseAdminClient.from('jobs').select('*').eq('status', 'pending').in('job_type', ['execute_research', 'execute_gap_analysis']).order('created_at', { ascending: true }).limit(1).maybeSingle())
-  }
-  
-  if (error) {
-    console.error('Failed to fetch job:', error)
-    return new Response(JSON.stringify({ error: 'Failed to fetch job' }), { status: 500, headers: { ...corsHeaders, 'Content-Type': 'application/json' } })
-  }
-  
-  if (!job) {
-    console.log('No pending or in-progress jobs found.')
-    return new Response(JSON.stringify({ message: 'No jobs to process' }), { status: 200, headers: { ...corsHeaders, 'Content-Type': 'application/json' } })
-  }
-  
-  // 2. Execute the correct workflow based on job type and status
-  try {
-    const { status, payload, job_type } = job
-    
-    if (status === 'pending') {
-      await executePlanningStage(supabaseAdminClient, job)
-    } else if (status === 'in_progress') {
-      if (job_type === 'execute_gap_analysis') {
-        // New gap analysis workflow - execute all steps at once
-        await executeGapAnalysisWorkflow(supabaseAdminClient, job)
-      } else {
-        // Original execute_research workflow - step by step
-        const { research_plan, next_task_index } = payload
-        
-        if (next_task_index < research_plan.length) {
-          await executeResearchStage(supabaseAdminClient, job)
-        } else {
-          await executeSynthesisStage(supabaseAdminClient, job)
-        }
-      }
-    }
-    
-    return new Response(JSON.stringify({ message: `Successfully processed job ${job.id}` }), { status: 200, headers: { ...corsHeaders, 'Content-Type': 'application/json' } })
-
-  } catch (e) {
-    await handleFailure(supabaseAdminClient, job, e)
-    return new Response(JSON.stringify({ error: `Failed to process job ${job.id}: ${e.message}` }), { status: 500, headers: { ...corsHeaders, 'Content-Type': 'application/json' } })
   }
 })
 </file>
@@ -3698,14 +5315,573 @@ Deno.serve(async (req) => {
 })
 </file>
 
+<file path="supabase/functions/generate-foundation-brief/index.ts">
+// supabase/functions/generate-foundation-brief/index.ts
+
+import { createClient } from 'https://esm.sh/@supabase/supabase-js@2'
+import { corsHeaders } from '../_shared/cors.ts'
+
+const FOUNDATION_META_PROMPT = `
+**CONTEXT:**
+You are a world-class Managing Director at a top-tier strategy consulting firm, kicking off a critical workstream for an investment memo. Your task is to design a comprehensive research brief for your junior analyst team (which is an AI Research Engine).
+
+This brief must be so clear, specific, and well-structured that it leaves no room for ambiguity and ensures the final research output is decision-grade.
+
+**INPUTS YOU WILL BE GIVEN:**
+1.  **{Chapter_Template_Prompt}:** The high-level prompt for the chapter we are building. This defines the overall structure and goals.
+2.  **{Project_Context}:** A summary of the project's background, goals, and any specific client requirements (e.g., budgets, timelines).
+3.  **{Key_Documents_Summary}:** A brief summary of the key documents available in the client's dataroom.
+
+**YOUR TASK:**
+Based on the provided inputs, generate a complete and detailed research prompt (a "brief") for the AI Research Engine. This brief must adhere to the following principles:
+
+1.  **Assign a Persona & Objective:** Start the brief by assigning a clear role to the AI Research Engine (e.g., "You are a market intelligence analyst...").
+2.  **Define Explicit Guardrails:** The brief must include sections for \`Scope\`, \`Timeframe\` (default to 2023-2025), and a \`Source Quality Hierarchy\` (prioritizing official reports, regulatory filings, and reputable industry analysis over general news).
+3.  **Create Structured Research Pillars:** Analyze the {Chapter_Template_Prompt} and {Project_Context} to create 5-7 logical research pillars. These pillars should become the main sections of the research brief.
+4.  **Formulate Evidence-Seeking Questions:** For each pillar, formulate 3-5 specific, evidence-seeking questions that hunt for verifiable **nouns and numbers** (e.g., "What are the *specific names* of competitor products?", "What were the *contract values*?", "What is the *market size in USD*?").
+5.  **Adopt a Skeptical Stance:** Ensure some questions are designed to find "negative space"—gaps, weaknesses, failed attempts, and customer complaints about existing solutions.
+6.  **Prescribe the Output Structure:** The brief must end with a section detailing the required \`Output Requirements\`. Instruct the AI Research Engine to structure its final report with clear Markdown headers for each research pillar and to present tabular data using Markdown tables. It must also include a clear instruction on how to handle missing information (e.g., "If you cannot find specific data, you must explicitly state 'No verifiable public evidence was found'").
+
+**CRITICAL: SOURCE CITATION REQUIREMENTS**
+The brief MUST include explicit instructions for the AI Research Engine to:
+- Provide complete, working URLs for every fact, statistic, and claim
+- Use inline citations with full URLs: [Source Name](https://complete-url.com)
+- NEVER use placeholder citations like [1], [2], etc.
+- Include a comprehensive "Bibliography" section with ALL sources at the end
+- Preserve and cite ALL sources found during research - do not omit any URLs
+
+**WHAT NOT TO DO:**
+*   Do not write the research report yourself. You are only writing the *prompt* for the research AI.
+*   Do not ask vague questions like "What is the market?" Instead, ask "What was the total addressable market size in USD for workforce analytics in 2024, according to Gartner or Forrester?"
+
+**BEGIN. Generate the research brief now.**
+`
+
+Deno.serve(async (req) => {
+  // Handle CORS preflight requests
+  if (req.method === 'OPTIONS') {
+    return new Response('ok', { headers: corsHeaders })
+  }
+
+  try {
+    console.log('Function started, parsing request body...')
+    const { project_id } = await req.json()
+    console.log('Received project_id:', project_id)
+    
+    if (!project_id) {
+      return new Response(JSON.stringify({ error: "Missing 'project_id' in request body" }), {
+        headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+        status: 400,
+      })
+    }
+
+    // Create a Supabase client with the service_role key
+    const supabaseAdminClient = createClient(
+      Deno.env.get('SUPABASE_URL') ?? '',
+      Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? ''
+    )
+
+    // Fetch project data with chapter template via join (left join for custom prompts)
+    console.log('Fetching project data from database...')
+    const { data: projectData, error: projectError } = await supabaseAdminClient
+      .from('projects')
+      .select(`
+        project_context,
+        key_documents_summary,
+        custom_prompt,
+        chapter_templates ( chapter_prompt )
+      `)
+      .eq('id', project_id)
+      .single()
+
+    if (projectError) {
+      console.error('Project fetch error:', projectError)
+      throw projectError
+    }
+    if (!projectData) {
+      console.error('No project data found for ID:', project_id)
+      throw new Error('Project not found.')
+    }
+    console.log('Project data fetched successfully')
+
+    // Determine the chapter prompt to use (template or custom)
+    let chapterPrompt = ''
+    if (projectData.custom_prompt) {
+      // Use custom prompt directly
+      chapterPrompt = projectData.custom_prompt
+      console.log('Using custom prompt for project')
+    } else if (projectData.chapter_templates && 'chapter_prompt' in projectData.chapter_templates) {
+      // Use template prompt
+      chapterPrompt = (projectData.chapter_templates as any).chapter_prompt
+      console.log('Using template prompt for project')
+    } else {
+      chapterPrompt = 'No chapter template or custom prompt provided.'
+      console.warn('No prompt found for project - using fallback')
+    }
+
+    // Construct the full prompt
+    let fullPrompt = FOUNDATION_META_PROMPT
+    fullPrompt = fullPrompt.replace('{Chapter_Template_Prompt}', chapterPrompt)
+    fullPrompt = fullPrompt.replace('{Project_Context}', projectData.project_context)
+    fullPrompt = fullPrompt.replace('{Key_Documents_Summary}', projectData.key_documents_summary || 'No documents provided.')
+
+    // Get OpenRouter API key
+    const openRouterApiKey = Deno.env.get('OPENROUTER_API_KEY')
+
+    if (!openRouterApiKey) {
+      throw new Error('SERVER ERROR: OPENROUTER_API_KEY was not found in the environment.')
+    }
+
+    console.log('OpenRouter API key found, making request...')
+
+    const res = await fetch("https://openrouter.ai/api/v1/chat/completions", {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${openRouterApiKey}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        // CORRECTED MODEL NAME: Using the official ID for Gemini 2.5 Pro on OpenRouter
+        model: "google/gemini-2.5-flash",
+        messages: [{ role: "user", content: fullPrompt }],
+      }),
+    })
+
+    if (!res.ok) {
+      const errorBody = await res.text()
+      throw new Error(`OpenRouter API request failed: ${errorBody}`)
+    }
+
+    const aiResponse = await res.json()
+    const generatedBrief = aiResponse.choices[0].message.content
+
+    // Insert the new report
+    const { data: newReport, error: insertError } = await supabaseAdminClient
+      .from('reports')
+      .insert({
+        project_id: project_id,
+        research_brief: generatedBrief,
+        report_type: 'foundation',
+        status: 'pending',
+      })
+      .select('id')
+      .single()
+
+    if (insertError) throw insertError
+
+    // Return success
+    return new Response(JSON.stringify({ report_id: newReport.id }), {
+      headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+      status: 200,
+    })
+
+  } catch (error: any) {
+    console.error('Function error details:', {
+      message: error.message,
+      stack: error.stack,
+      name: error.name
+    })
+    return new Response(JSON.stringify({ 
+      error: error.message,
+      details: error.stack 
+    }), {
+      headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+      status: 500,
+    })
+  }
+})
+</file>
+
+<file path="supabase/functions/research-worker/index.ts">
+// supabase/functions/research-worker/index.ts
+
+import { createClient, SupabaseClient } from 'https://esm.sh/@supabase/supabase-js@2'
+import { corsHeaders } from '../_shared/cors.ts'
+
+// --- Types ---
+interface Job {
+  id: number;
+  job_type: 'execute_research' | 'execute_gap_analysis';
+  status: 'pending' | 'in_progress' | 'completed' | 'failed';
+  payload: {
+    report_id: string;
+    research_plan?: string[];
+    atomic_results?: any[];
+    next_task_index?: number;
+    foundation_report?: string;
+    first_draft?: string;
+    custom_research_plan?: string[];
+  };
+  // ... other columns
+}
+
+// --- Constants ---
+const SYNTHESIZER_META_PROMPT = `You are a meticulous and analytical synthesis agent. Your sole purpose is to transform a series of raw, atomic research reports into a structured, evidence-backed JSON object.
+
+You will be given a collection of research findings, each corresponding to a specific research task.
+
+Your task is to:
+1.  Read and understand all the provided raw research data.
+2.  Identify distinct, verifiable claims from the data.
+3.  For each claim, you MUST identify and extract ALL source URL(s) that support it.
+4.  Synthesize related findings into concise, well-formed claims. For example, if one source says the market is $10B and another says it's $12B, a good claim would be "The market size is estimated to be between $10B and $12B."
+5.  Construct a single JSON object as your final output.
+
+**CRITICAL SOURCE REQUIREMENTS:**
+- You MUST extract and preserve ALL URLs mentioned in the raw data
+- Look for URLs in square brackets [https://...], parentheses (https://...), or plain text
+- Every claim must include ALL supporting URLs, not just one
+- If multiple sources support a claim, include ALL of them in the evidence array
+- Do NOT lose any source URLs from the original research data
+
+**JSON OUTPUT REQUIREMENTS:**
+- The root of the object must be a single key named "claims".
+- The value of "claims" must be an array of objects.
+- Each object in the array must have exactly two keys:
+    1.  \`"claim"\`: A string containing the synthesized, evidence-based statement.
+    2.  \`"evidence"\`: An array of strings, where each string is a complete URL pointing to the source. Include ALL URLs that support this claim.
+
+**RULES:**
+- You MUST respond with ONLY a valid JSON object. Do not include any explanatory text, markdown formatting, or any characters outside of the JSON structure.
+- Every claim you generate MUST be directly supported by the provided raw data and its sources. DO NOT invent information.
+- If the raw data for a task indicates that no verifiable evidence was found, do not generate a claim for it.
+- PRESERVE ALL SOURCE URLS - do not summarize or omit any URLs found in the raw data
+
+Here is the raw data from the research team:
+---
+{raw_data}
+---`
+
+// --- Helper Functions ---
+
+/**
+ * Updates the status of a job and the associated report in case of a failure.
+ */
+async function handleFailure(supabaseAdminClient: SupabaseClient, job: Job, error: any) {
+  console.error(`Job ${job.id} failed:`, error)
+  await supabaseAdminClient.from('jobs').update({
+    status: 'failed',
+    error_log: error.message,
+    last_ran_at: new Date().toISOString()
+  }).eq('id', job.id)
+  
+  await supabaseAdminClient.from('reports').update({
+    status: 'error'
+  }).eq('id', job.payload.report_id)
+}
+
+/**
+ * STAGE 1: Generate the research plan for a new job.
+ */
+async function executePlanningStage(supabaseAdminClient: SupabaseClient, job: Job) {
+  console.log(`[Job ${job.id}] Starting planning stage for report ${job.payload.report_id}`)
+  
+  // Mark job as in_progress
+  await supabaseAdminClient.from('jobs').update({
+    status: 'in_progress',
+    last_ran_at: new Date().toISOString()
+  }).eq('id', job.id)
+  
+  let research_plan: string[]
+  
+  if (job.job_type === 'execute_gap_analysis') {
+    // For gap analysis jobs, generate plan using gap analysis function
+    const planResponse = await supabaseAdminClient.functions.invoke('generate-gap-analysis-brief', {
+      body: {
+        foundation_report: job.payload.foundation_report,
+        first_draft: job.payload.first_draft
+      }
+    })
+    
+    if (planResponse.error) {
+      throw new Error(`Gap analysis planning failed: ${planResponse.error.message}`)
+    }
+    
+    research_plan = planResponse.data.research_plan
+  } else {
+    // For regular research jobs, use existing logic
+    // Fetch report and project data
+    const { data: reportData } = await supabaseAdminClient.from('reports').select('project_id').eq('id', job.payload.report_id).single()
+    const { data: projectData } = await supabaseAdminClient.from('projects').select(`
+      project_context, key_documents_summary, custom_prompt, chapter_templates ( chapter_prompt )
+    `).eq('id', reportData.project_id).single()
+
+    // Check if custom research plan is provided, otherwise generate one
+    research_plan = job.payload.custom_research_plan
+    
+    if (!research_plan) {
+      // Generate the plan
+      const chapterPrompt = projectData.custom_prompt || projectData.chapter_templates?.chapter_prompt || 'No prompt available'
+      const planResponse = await supabaseAdminClient.functions.invoke('generate-research-plan', {
+        body: {
+          project_context: projectData.project_context,
+          documents_summary: projectData.key_documents_summary,
+          chapter_prompt: chapterPrompt
+        }
+      })
+
+      research_plan = planResponse.data.research_plan
+    }
+  }
+  
+  if (!Array.isArray(research_plan) || research_plan.length === 0) {
+    throw new Error('Invalid or empty research plan received')
+  }
+  
+  console.log(`[Job ${job.id}] Planning complete. Generated ${research_plan.length} tasks.`)
+
+  // Initialize state and save to job payload
+  await supabaseAdminClient.from('jobs').update({
+    payload: {
+      ...job.payload,
+      research_plan,
+      atomic_results: Array(research_plan.length).fill(null),
+      next_task_index: 0,
+    }
+  }).eq('id', job.id)
+}
+
+/**
+ * REUSABLE HELPER: Execute atomic research tasks in parallel with concurrency limit
+ */
+async function runAtomicResearch(supabaseAdminClient: SupabaseClient, research_plan: string[]): Promise<any[]> {
+  const CONCURRENCY_LIMIT = 3 // Adjust based on your needs
+  const results: any[] = []
+  
+  // Execute tasks in batches with concurrency limit
+  for (let i = 0; i < research_plan.length; i += CONCURRENCY_LIMIT) {
+    const batch = research_plan.slice(i, i + CONCURRENCY_LIMIT)
+    const batchPromises = batch.map(async (question, batchIndex) => {
+      const taskResponse = await supabaseAdminClient.functions.invoke('execute-atomic-task', {
+        body: { question }
+      })
+      
+      if (taskResponse.error) {
+        console.warn(`Atomic task failed: ${taskResponse.error.message}`)
+        return { report_text: `[Task failed: ${taskResponse.error.message}]` }
+      }
+      
+      return taskResponse.data
+    })
+    
+    const batchResults = await Promise.all(batchPromises)
+    results.push(...batchResults)
+  }
+  
+  return results
+}
+
+/**
+ * REUSABLE HELPER: Synthesize raw research data into final report
+ */
+async function runSynthesis(supabaseAdminClient: SupabaseClient, rawData: string): Promise<string> {
+  const openRouterApiKey = Deno.env.get('OPENROUTER_API_KEY')
+  const synthesisPrompt = SYNTHESIZER_META_PROMPT.replace('{raw_data}', rawData)
+  
+  const synthesisResponse = await fetch("https://openrouter.ai/api/v1/chat/completions", {
+    method: 'POST',
+    headers: { 'Authorization': `Bearer ${openRouterApiKey}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      model: "google/gemini-2.5-flash",
+      messages: [{ role: "user", content: synthesisPrompt }],
+    }),
+  })
+  
+  if (!synthesisResponse.ok) {
+    throw new Error(`Synthesis API failed: ${await synthesisResponse.text()}`)
+  }
+  
+  const synthesisAiResponse = await synthesisResponse.json()
+  const finalReportContent = synthesisAiResponse.choices[0].message.content
+  
+  if (!finalReportContent) {
+    throw new Error('Synthesizer returned empty content.')
+  }
+  
+  // Parse the JSON response to validate it's properly formatted
+  let parsedReport
+  try {
+    parsedReport = JSON.parse(finalReportContent)
+  } catch (error) {
+    throw new Error(`Synthesizer returned invalid JSON: ${error.message}`)
+  }
+  
+  // Return the JSON as a string for storage in the database
+  return JSON.stringify(parsedReport)
+}
+
+/**
+ * STAGE 2: Execute the next single atomic research task (for backward compatibility).
+ */
+async function executeResearchStage(supabaseAdminClient: SupabaseClient, job: Job) {
+  const { report_id, research_plan, atomic_results, next_task_index } = job.payload
+  
+  console.log(`[Job ${job.id}] Executing task ${next_task_index + 1} of ${research_plan.length}`)
+  const question = research_plan[next_task_index]
+
+  // Invoke the atomic task function
+  const taskResponse = await supabaseAdminClient.functions.invoke('execute-atomic-task', {
+    body: { question }
+  })
+  
+  if (taskResponse.error) {
+    // Note: A non-2xx response from the function will land here.
+    // The atomic task function is designed to not throw errors but return a structured message,
+    // so this path indicates a more fundamental issue (e.g., the function crashed).
+    console.warn(`[Job ${job.id}] Atomic task invocation failed: ${taskResponse.error.message}`)
+    atomic_results[next_task_index] = { report_text: `[Task invocation failed: ${taskResponse.error.message}]` };
+  } else {
+    atomic_results[next_task_index] = taskResponse.data
+  }
+  
+  // Update payload with the result and increment the index
+  await supabaseAdminClient.from('jobs').update({
+    payload: {
+      ...job.payload,
+      atomic_results,
+      next_task_index: next_task_index + 1,
+    },
+    last_ran_at: new Date().toISOString()
+  }).eq('id', job.id)
+  
+  console.log(`[Job ${job.id}] Task ${next_task_index + 1} complete.`)
+}
+
+/**
+ * STAGE 3: Synthesize the final report when all tasks are complete.
+ */
+async function executeSynthesisStage(supabaseAdminClient: SupabaseClient, job: Job) {
+  const { report_id, research_plan, atomic_results } = job.payload
+  console.log(`[Job ${job.id}] All tasks complete. Starting synthesis stage.`)
+
+  // Combine results
+  const combinedReportTexts = atomic_results.map((result, index) => {
+    const reportText = result?.report_text || `[This research task failed to produce data.]`
+    return `## Research Task ${index + 1}: ${research_plan[index]}\n\n${reportText}`
+  })
+  const rawData = combinedReportTexts.join('\n\n---\n\n')
+
+  // Use the reusable synthesis helper
+  const finalReport = await runSynthesis(supabaseAdminClient, rawData)
+
+  console.log(`[Job ${job.id}] Synthesis complete. Saving final report.`)
+  
+  // Save final report
+  await supabaseAdminClient.from('reports').update({
+    final_report: finalReport,
+    status: 'complete'
+  }).eq('id', report_id)
+
+  // Mark job as completed
+  await supabaseAdminClient.from('jobs').update({
+    status: 'completed',
+    last_ran_at: new Date().toISOString()
+  }).eq('id', job.id)
+}
+
+/**
+ * NEW: Execute gap analysis workflow using reusable components
+ */
+async function executeGapAnalysisWorkflow(supabaseAdminClient: SupabaseClient, job: Job) {
+  const { report_id, research_plan } = job.payload
+  console.log(`[Job ${job.id}] Starting gap analysis workflow with ${research_plan.length} tasks.`)
+
+  // Step B: Execute atomic research tasks in parallel
+  console.log(`[Job ${job.id}] Executing atomic research tasks...`)
+  const atomic_results = await runAtomicResearch(supabaseAdminClient, research_plan)
+
+  // Step C: Combine results for synthesis
+  const combinedReportTexts = atomic_results.map((result, index) => {
+    const reportText = result?.report_text || `[This research task failed to produce data.]`
+    return `## Research Task ${index + 1}: ${research_plan[index]}\n\n${reportText}`
+  })
+  const rawData = combinedReportTexts.join('\n\n---\n\n')
+
+  // Step C: Synthesize final report
+  console.log(`[Job ${job.id}] Synthesizing final gap analysis report...`)
+  const finalReport = await runSynthesis(supabaseAdminClient, rawData)
+
+  // Step D: Update database
+  console.log(`[Job ${job.id}] Gap analysis complete. Saving final report.`)
+  
+  await supabaseAdminClient.from('reports').update({
+    final_report: finalReport,
+    status: 'complete'
+  }).eq('id', report_id)
+
+  await supabaseAdminClient.from('jobs').update({
+    status: 'completed',
+    last_ran_at: new Date().toISOString()
+  }).eq('id', job.id)
+}
+
+// --- Main Handler ---
+
+Deno.serve(async (req) => {
+  if (req.method === 'OPTIONS') return new Response('ok', { headers: corsHeaders })
+  
+  const supabaseAdminClient = createClient(
+    Deno.env.get('SUPABASE_URL') ?? '',
+    Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? ''
+  )
+
+  // 1. Find a job to work on. Prioritize in-progress, then pending.
+  let { data: job, error } = await supabaseAdminClient.from('jobs').select('*').eq('status', 'in_progress').in('job_type', ['execute_research', 'execute_gap_analysis']).order('last_ran_at', { ascending: true }).limit(1).maybeSingle()
+  
+  if (!job) {
+    ({ data: job, error } = await supabaseAdminClient.from('jobs').select('*').eq('status', 'pending').in('job_type', ['execute_research', 'execute_gap_analysis']).order('created_at', { ascending: true }).limit(1).maybeSingle())
+  }
+  
+  if (error) {
+    console.error('Failed to fetch job:', error)
+    return new Response(JSON.stringify({ error: 'Failed to fetch job' }), { status: 500, headers: { ...corsHeaders, 'Content-Type': 'application/json' } })
+  }
+  
+  if (!job) {
+    console.log('No pending or in-progress jobs found.')
+    return new Response(JSON.stringify({ message: 'No jobs to process' }), { status: 200, headers: { ...corsHeaders, 'Content-Type': 'application/json' } })
+  }
+  
+  // 2. Execute the correct workflow based on job type and status
+  try {
+    const { status, payload, job_type } = job
+    
+    if (status === 'pending') {
+      await executePlanningStage(supabaseAdminClient, job)
+    } else if (status === 'in_progress') {
+      if (job_type === 'execute_gap_analysis') {
+        // New gap analysis workflow - execute all steps at once
+        await executeGapAnalysisWorkflow(supabaseAdminClient, job)
+      } else {
+        // Original execute_research workflow - step by step
+        const { research_plan, next_task_index } = payload
+        
+        if (next_task_index < research_plan.length) {
+          await executeResearchStage(supabaseAdminClient, job)
+        } else {
+          await executeSynthesisStage(supabaseAdminClient, job)
+        }
+      }
+    }
+    
+    return new Response(JSON.stringify({ message: `Successfully processed job ${job.id}` }), { status: 200, headers: { ...corsHeaders, 'Content-Type': 'application/json' } })
+
+  } catch (e) {
+    await handleFailure(supabaseAdminClient, job, e)
+    return new Response(JSON.stringify({ error: `Failed to process job ${job.id}: ${e.message}` }), { status: 500, headers: { ...corsHeaders, 'Content-Type': 'application/json' } })
+  }
+})
+</file>
+
 <file path="app/page.tsx">
 'use client'
 
 import React, { useState, useRef, useEffect } from 'react'
 import { supabase } from '@/lib/supabaseClient'
 import ReportDisplay from '@/components/ReportDisplay'
-import JobStatusDisplay from '@/components/JobStatusDisplay';
-import { Upload, Sparkles, Search, ArrowRight, FileText, AlertCircle, TestTube2 } from 'lucide-react'
+import LiveProgressDisplay from '@/components/LiveProgressDisplay';
+import AtomicTasksDisplay from '@/components/AtomicTasksDisplay';
+import { Upload, Sparkles, Search, ArrowRight, FileText, AlertCircle, TestTube2, X } from 'lucide-react'
 
 export default function ResearchCopilot() {
   // Chapter Templates State
@@ -3714,6 +5890,7 @@ export default function ResearchCopilot() {
   // Project Loading State
   const [existingProjects, setExistingProjects] = useState<any[]>([])
   const [showProjectLoader, setShowProjectLoader] = useState(false)
+  const [selectedReportForAtomicTasks, setSelectedReportForAtomicTasks] = useState<string | null>(null)
 
   // Demo Mode State
   const [isDemoMode, setIsDemoMode] = useState(false)
@@ -3753,6 +5930,48 @@ Predictive Worker-Type Modeling: Explains the core AI agent's function. Based on
 
 External Labor Market Intelligence: Specifies the integration with a proprietary data lake containing over 30 billion external data points. This provides real-time insights into talent supply/demand, geographic skill density, and salary/rate benchmarks to drive optimized and evidence-based staffing decisions.`
 
+  const DEMO_CUSTOM_PROMPT = `You are an expert market research analyst tasked with conducting comprehensive research for a new AI-powered workforce optimization platform. Your analysis should focus on:
+
+## Market Analysis Framework
+1. **Market Sizing & Opportunity Assessment**
+   - Calculate realistic TAM, SAM, and SOM for integrated talent intelligence platforms
+   - Identify key market segments and growth drivers
+   - Analyze adoption barriers and market readiness
+
+2. **Competitive Intelligence**
+   - Map direct and indirect competitors (exclude legacy HCM/ERP suites)
+   - Analyze competitive positioning and differentiation opportunities
+   - Identify white space and market gaps
+
+3. **Customer Research**
+   - Define ideal customer profiles and buyer personas
+   - Understand key use cases and value propositions
+   - Analyze decision-making processes and buying criteria
+
+4. **Go-to-Market Strategy**
+   - Recommend optimal pricing models and strategies
+   - Identify most effective sales and marketing channels
+   - Propose customer acquisition and retention strategies
+
+5. **ROI & Business Case**
+   - Quantify potential customer value and ROI
+   - Develop financial projections and business models
+   - Assess implementation challenges and success factors
+
+## Research Methodology
+- Prioritize primary research over secondary sources
+- Include quantitative market data and qualitative insights
+- Provide specific, actionable recommendations
+- Support all findings with credible sources and evidence
+
+## Output Requirements
+- Executive summary with key findings
+- Detailed analysis for each framework area
+- Strategic recommendations with implementation roadmap
+- Risk assessment and mitigation strategies
+
+Focus on creating a new software category rather than competing in existing markets. The platform represents a fundamental shift from reactive to predictive workforce management.`
+
   // Stage 1: Foundation Report State
   const [projectContext, setProjectContext] = useState('')
   const [chapterTemplate, setChapterTemplate] = useState('')
@@ -3760,6 +5979,11 @@ External Labor Market Intelligence: Specifies the integration with a proprietary
   const [isLoadingReport, setIsLoadingReport] = useState(false)
   const [foundationReport, setFoundationReport] = useState('')
   const [currentReportId, setCurrentReportId] = useState<string | null>(null)
+  const [isRegeneratingReport, setIsRegeneratingReport] = useState(false)
+  
+  // Custom Prompt State
+  const [promptMode, setPromptMode] = useState<'preselect' | 'custom'>('preselect')
+  const [customPrompt, setCustomPrompt] = useState('')
   
   // Task Review State
   const [researchTasks, setResearchTasks] = useState<string[]>([])
@@ -3874,6 +6098,9 @@ External Labor Market Intelligence: Specifies the integration with a proprietary
           setCurrentReportId(reportId);
           pollForFoundationReport(reportId); // Start polling if we load an in-progress report
         }
+        
+        // Set this report for atomic tasks display
+        setSelectedReportForAtomicTasks(reportId)
       }
       
       setShowProjectLoader(false)
@@ -3941,9 +6168,15 @@ External Labor Market Intelligence: Specifies the integration with a proprietary
       // Prefill the form fields when demo mode is turned ON
       setProjectContext(DEMO_PROJECT_CONTEXT)
       setDocsSummary(DEMO_DOCS_SUMMARY)
-      // Optionally select the first template if available
-      if (templates.length > 0 && !chapterTemplate) {
-        setChapterTemplate(templates[0].id)
+      
+      // Set demo content based on current prompt mode
+      if (promptMode === 'custom') {
+        setCustomPrompt(DEMO_CUSTOM_PROMPT)
+      } else {
+        // Optionally select the first template if available
+        if (templates.length > 0 && !chapterTemplate) {
+          setChapterTemplate(templates[0].id)
+        }
       }
     } else {
       // Clear the form fields when demo mode is turned OFF (optional)
@@ -3951,6 +6184,8 @@ External Labor Market Intelligence: Specifies the integration with a proprietary
       setProjectContext('')
       setDocsSummary('')
       setChapterTemplate('')
+      setCustomPrompt('')
+      setPromptMode('preselect')
     }
   }
 
@@ -3994,17 +6229,32 @@ External Labor Market Intelligence: Specifies the integration with a proprietary
       setError(null)
       setIsGeneratingTasks(true)
 
-      if (!chapterTemplate) throw new Error('Please select a chapter template')
+      if (promptMode === 'preselect' && !chapterTemplate) {
+        throw new Error('Please select a chapter template')
+      }
+      if (promptMode === 'custom' && !customPrompt.trim()) {
+        throw new Error('Please enter a custom prompt')
+      }
 
       // 1. Create Project
+      const projectInsert: any = {
+        name: `Research Project ${new Date().toISOString()}`,
+        project_context: projectContext,
+        key_documents_summary: docsSummary,
+      }
+      
+      if (promptMode === 'preselect') {
+        projectInsert.chapter_template_id = chapterTemplate
+        projectInsert.custom_prompt = null
+      } else {
+        // For custom prompts, we'll use a null template_id and store the custom prompt
+        projectInsert.chapter_template_id = null
+        projectInsert.custom_prompt = customPrompt
+      }
+      
       const { data: projectData, error: projectError } = await supabase
         .from('projects')
-        .insert({
-          name: `Research Project ${new Date().toISOString()}`,
-          chapter_template_id: chapterTemplate,
-          project_context: projectContext,
-          key_documents_summary: docsSummary,
-        })
+        .insert(projectInsert)
         .select('id')
         .single()
 
@@ -4025,11 +6275,23 @@ External Labor Market Intelligence: Specifies the integration with a proprietary
       setCurrentReportId(reportId)
 
       // 3. Generate research plan to show tasks for review
+      let chapterPromptText = ''
+      if (promptMode === 'preselect') {
+        const { data: templateData } = await supabase
+          .from('chapter_templates')
+          .select('chapter_prompt')
+          .eq('id', chapterTemplate)
+          .single()
+        chapterPromptText = templateData?.chapter_prompt || ''
+      } else {
+        chapterPromptText = customPrompt
+      }
+      
       const { data: planData, error: planError } = await supabase.functions.invoke('generate-research-plan', {
         body: {
           project_context: projectContext,
           documents_summary: docsSummary,
-          chapter_prompt: (await supabase.from('chapter_templates').select('chapter_prompt').eq('id', chapterTemplate).single()).data?.chapter_prompt
+          chapter_prompt: chapterPromptText
         }
       })
 
@@ -4079,6 +6341,44 @@ External Labor Market Intelligence: Specifies the integration with a proprietary
       console.error('Error executing research:', err)
       setError(err instanceof Error ? err.message : 'Failed to execute research')
       setIsLoadingReport(false)
+    }
+  }
+
+  // Regenerate Foundation Research Report using existing atomic task data
+  const regenerateFoundationReport = async () => {
+    if (!currentReportId) {
+      setError('No report ID available for regeneration')
+      return
+    }
+
+    try {
+      setError(null)
+      setIsRegeneratingReport(true)
+
+      console.log(`Regenerating report ${currentReportId}`)
+
+      // Call the regenerate-report Supabase function
+      const { data, error: regenerateError } = await supabase.functions.invoke('regenerate-report', {
+        body: { report_id: currentReportId }
+      })
+
+      if (regenerateError) {
+        console.error('Regeneration error details:', regenerateError)
+        throw new Error(`Regeneration failed: ${regenerateError.message}`)
+      }
+
+      if (data?.final_report) {
+        setFoundationReport(data.final_report)
+        console.log(`Report regenerated successfully using ${data.atomic_tasks_used} atomic tasks`)
+      } else {
+        throw new Error('No final report returned from regeneration')
+      }
+
+    } catch (err) {
+      console.error('Error regenerating report:', err)
+      setError(err instanceof Error ? err.message : 'Failed to regenerate report')
+    } finally {
+      setIsRegeneratingReport(false)
     }
   }
 
@@ -4240,13 +6540,33 @@ External Labor Market Intelligence: Specifies the integration with a proprietary
                         {project.reports && project.reports.length > 0 && (
                           <div className="space-y-2">
                             {project.reports.map((report: any) => (
-                              <button
-                                key={report.id}
-                                onClick={() => loadProject(project.id, report.id)}
-                                className="w-full text-left px-3 py-2 bg-zinc-800 hover:bg-zinc-700 rounded text-sm text-zinc-300 transition-colors"
-                              >
-                                {report.report_type} - {report.status} ({new Date(report.created_at).toLocaleDateString()})
-                              </button>
+                              <div key={report.id} className="bg-zinc-800 rounded-lg p-3">
+                                <div className="flex items-center justify-between mb-2">
+                                  <span className="text-sm text-zinc-300">
+                                    {report.report_type} - {report.status}
+                                  </span>
+                                  <span className="text-xs text-zinc-500">
+                                    {new Date(report.created_at).toLocaleDateString()}
+                                  </span>
+                                </div>
+                                <div className="flex space-x-2">
+                                  <button
+                                    onClick={() => loadProject(project.id, report.id)}
+                                    className="flex-1 px-3 py-1 bg-blue-600 hover:bg-blue-500 text-white text-xs rounded transition-colors"
+                                  >
+                                    Load Report
+                                  </button>
+                                  <button
+                                    onClick={() => {
+                                      setSelectedReportForAtomicTasks(report.id)
+                                      setShowProjectLoader(false)
+                                    }}
+                                    className="flex-1 px-3 py-1 bg-green-600 hover:bg-green-500 text-white text-xs rounded transition-colors"
+                                  >
+                                    View Tasks
+                                  </button>
+                                </div>
+                              </div>
                             ))}
                           </div>
                         )}
@@ -4273,6 +6593,26 @@ External Labor Market Intelligence: Specifies the integration with a proprietary
           </div>
         )}
 
+        {/* Atomic Tasks Display */}
+        {selectedReportForAtomicTasks && (
+          <section className="mb-12">
+            <div className="flex items-center justify-between mb-4">
+              <h2 className="text-2xl font-bold text-zinc-100">Atomic Tasks</h2>
+              <button
+                onClick={() => setSelectedReportForAtomicTasks(null)}
+                className="px-4 py-2 bg-zinc-700 hover:bg-zinc-600 text-white rounded-lg transition-colors flex items-center gap-2"
+              >
+                <X className="w-4 h-4" />
+                Close
+              </button>
+            </div>
+            <AtomicTasksDisplay 
+              reportId={selectedReportForAtomicTasks}
+              className="animate-in fade-in duration-500"
+            />
+          </section>
+        )}
+
         {/* Stage 1: Foundation Research */}
         <section className="mb-12">
           <div className="bg-zinc-900 rounded-lg border border-zinc-800 p-6">
@@ -4291,7 +6631,7 @@ External Labor Market Intelligence: Specifies the integration with a proprietary
 
                 <div className="space-y-3 mb-6">
                   {researchTasks.map((task, index) => (
-                    <div key={index} className="flex items-start space-x-3">
+                    <div key={index} className="flex items-start space-x-3 group">
                       <span className="text-zinc-500 text-sm mt-2 w-8">{index + 1}.</span>
                       <textarea
                         value={task}
@@ -4304,6 +6644,19 @@ External Labor Market Intelligence: Specifies the integration with a proprietary
                         placeholder="Enter research task..."
                         rows={3}
                       />
+                      <button
+                        onClick={() => {
+                          if (researchTasks.length > 1) {
+                            const newTasks = researchTasks.filter((_, i) => i !== index)
+                            setResearchTasks(newTasks)
+                          }
+                        }}
+                        disabled={researchTasks.length <= 1}
+                        className="mt-2 p-2 text-zinc-500 hover:text-red-400 hover:bg-red-900/20 rounded-lg transition-colors opacity-0 group-hover:opacity-100 disabled:opacity-30 disabled:cursor-not-allowed disabled:hover:text-zinc-500 disabled:hover:bg-transparent"
+                        title={researchTasks.length <= 1 ? "Cannot delete - at least one task is required" : "Delete this task"}
+                      >
+                        <X className="w-4 h-4" />
+                      </button>
                     </div>
                   ))}
                 </div>
@@ -4318,7 +6671,12 @@ External Labor Market Intelligence: Specifies the integration with a proprietary
                     Add Task
                   </button>
                   <span className="text-sm text-zinc-400">
-                    {researchTasks.length} tasks total
+                    {researchTasks.length} task{researchTasks.length !== 1 ? 's' : ''} total
+                    {researchTasks.length <= 1 && (
+                      <span className="ml-2 text-xs text-amber-400">
+                        (minimum 1 required)
+                      </span>
+                    )}
                   </span>
                 </div>
 
@@ -4344,23 +6702,93 @@ External Labor Market Intelligence: Specifies the integration with a proprietary
             {/* Form */}
             {!showTaskReview && (
               <div className="space-y-6">
+                {/* Prompt Mode Toggle */}
                 <div>
-                  <label className="block text-sm font-medium text-zinc-300 mb-2">
-                    Chapter Template
+                  <label className="block text-sm font-medium text-zinc-300 mb-3">
+                    Prompt Selection Mode
                   </label>
-                  <select
-                    value={chapterTemplate}
-                    onChange={(e) => setChapterTemplate(e.target.value)}
-                    className="w-full bg-zinc-800 border border-zinc-700 rounded-lg px-3 py-2 text-zinc-100 focus:outline-none focus:ring-2 focus:ring-blue-500"
-                  >
-                    <option value="">Select a template...</option>
-                    {templates.map((template) => (
-                      <option key={template.id} value={template.id}>
-                        {template.name}
-                      </option>
-                    ))}
-                  </select>
+                  <div className="flex space-x-4">
+                    <button
+                      onClick={() => {
+                        setPromptMode('preselect')
+                        if (isDemoMode) {
+                          setCustomPrompt('')
+                          if (templates.length > 0 && !chapterTemplate) {
+                            setChapterTemplate(templates[0].id)
+                          }
+                        }
+                      }}
+                      className={`flex-1 py-3 px-4 rounded-lg border transition-colors ${
+                        promptMode === 'preselect'
+                          ? 'bg-blue-600 border-blue-500 text-white'
+                          : 'bg-zinc-800 border-zinc-700 text-zinc-300 hover:bg-zinc-700'
+                      }`}
+                    >
+                      Pre-Select Template
+                    </button>
+                    <button
+                      onClick={() => {
+                        setPromptMode('custom')
+                        if (isDemoMode) {
+                          setChapterTemplate('')
+                          setCustomPrompt(DEMO_CUSTOM_PROMPT)
+                        }
+                      }}
+                      className={`flex-1 py-3 px-4 rounded-lg border transition-colors ${
+                        promptMode === 'custom'
+                          ? 'bg-blue-600 border-blue-500 text-white'
+                          : 'bg-zinc-800 border-zinc-700 text-zinc-300 hover:bg-zinc-700'
+                      }`}
+                    >
+                      Add Custom Prompt
+                    </button>
+                  </div>
                 </div>
+
+                {/* Chapter Template Selection (only show in preselect mode) */}
+                {promptMode === 'preselect' && (
+                  <div>
+                    <label className="block text-sm font-medium text-zinc-300 mb-2">
+                      Chapter Template
+                    </label>
+                    <select
+                      value={chapterTemplate}
+                      onChange={(e) => setChapterTemplate(e.target.value)}
+                      className="w-full bg-zinc-800 border border-zinc-700 rounded-lg px-3 py-2 text-zinc-100 focus:outline-none focus:ring-2 focus:ring-blue-500"
+                    >
+                      <option value="">Select a template...</option>
+                      {templates.map((template) => (
+                        <option key={template.id} value={template.id}>
+                          {template.name}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                )}
+
+                {/* Custom Prompt Input (only show in custom mode) */}
+                {promptMode === 'custom' && (
+                  <div>
+                    <label className="block text-sm font-medium text-zinc-300 mb-2">
+                      Custom Research Prompt
+                      {isDemoMode && <span className="ml-2 text-xs text-purple-400 font-normal">(Demo Content)</span>}
+                    </label>
+                    <textarea
+                      value={customPrompt}
+                      onChange={(e) => setCustomPrompt(e.target.value)}
+                      className={`w-full bg-zinc-800 border rounded-lg px-3 py-2 text-zinc-100 focus:outline-none focus:ring-2 ${
+                        isDemoMode 
+                          ? 'border-purple-500 focus:ring-purple-500' 
+                          : 'border-zinc-700 focus:ring-blue-500'
+                      }`}
+                      rows={6}
+                      placeholder="Enter your custom research prompt. This will guide the AI in generating research tasks and conducting the analysis. Be specific about what you want to research, analyze, and understand..."
+                    />
+                    <p className="text-xs text-zinc-500 mt-1">
+                      Tip: Include specific questions you want answered, methodologies to use, and the type of output you expect.
+                    </p>
+                  </div>
+                )}
 
                 <div>
                   <label className="block text-sm font-medium text-zinc-300 mb-2">
@@ -4400,7 +6828,12 @@ External Labor Market Intelligence: Specifies the integration with a proprietary
 
                 <button
                   onClick={generateResearchTasks}
-                  disabled={isGeneratingTasks || !chapterTemplate || !projectContext}
+                  disabled={
+                    isGeneratingTasks || 
+                    !projectContext ||
+                    (promptMode === 'preselect' && !chapterTemplate) ||
+                    (promptMode === 'custom' && !customPrompt.trim())
+                  }
                   className="w-full py-3 bg-blue-600 text-white rounded-lg hover:bg-blue-500 transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center space-x-2"
                 >
                   {isGeneratingTasks ? (
@@ -4421,7 +6854,7 @@ External Labor Market Intelligence: Specifies the integration with a proprietary
 
           {/* Loading State for Foundation Report */}
           {isLoadingReport && currentReportId && (
-            <JobStatusDisplay
+            <LiveProgressDisplay
               reportId={currentReportId}
               onComplete={(finalReport) => {
                 setFoundationReport(finalReport)
@@ -4436,11 +6869,30 @@ External Labor Market Intelligence: Specifies the integration with a proprietary
 
           {/* Foundation Report Display */}
           {foundationReport && !isLoadingReport && (
-            <ReportDisplay 
-              title="Foundation Research Report" 
-              content={foundationReport} 
-              className="animate-in fade-in duration-500"
-            />
+            <div className="space-y-4">
+              <div className="flex items-center justify-between">
+                <h3 className="text-lg font-semibold text-zinc-100">Foundation Research Report</h3>
+                {currentReportId && (
+                  <button
+                    onClick={() => setSelectedReportForAtomicTasks(currentReportId)}
+                    className="px-4 py-2 bg-green-600 hover:bg-green-500 text-white rounded-lg transition-colors flex items-center gap-2 text-sm"
+                  >
+                    <FileText className="w-4 h-4" />
+                    View Atomic Tasks
+                  </button>
+                )}
+              </div>
+              <ReportDisplay 
+                title="Foundation Research Report" 
+                content={foundationReport} 
+                className="animate-in fade-in duration-500"
+                onRegenerate={() => {
+                  console.log('Regenerate button clicked, currentReportId:', currentReportId)
+                  regenerateFoundationReport()
+                }}
+                isRegenerating={isRegeneratingReport}
+              />
+            </div>
           )}
         </section>
 
@@ -4490,7 +6942,7 @@ External Labor Market Intelligence: Specifies the integration with a proprietary
 
             {/* Loading State for Gap Report Execution */}
             {isLoadingGapReport && gapReportId && (
-              <JobStatusDisplay
+              <LiveProgressDisplay
                 reportId={gapReportId}
                 onComplete={(finalReport) => {
                   setGapAnalysisReport(finalReport)
@@ -4505,11 +6957,25 @@ External Labor Market Intelligence: Specifies the integration with a proprietary
 
             {/* Gap Analysis Report Display */}
             {gapAnalysisReport && !isLoadingGapReport && (
-              <ReportDisplay 
-                title="Gap Analysis Report" 
-                content={gapAnalysisReport} 
-                className="animate-in fade-in duration-500"
-              />
+              <div className="space-y-4">
+                <div className="flex items-center justify-between">
+                  <h3 className="text-lg font-semibold text-zinc-100">Gap Analysis Report</h3>
+                  {gapReportId && (
+                    <button
+                      onClick={() => setSelectedReportForAtomicTasks(gapReportId)}
+                      className="px-4 py-2 bg-green-600 hover:bg-green-500 text-white rounded-lg transition-colors flex items-center gap-2 text-sm"
+                    >
+                      <FileText className="w-4 h-4" />
+                      View Atomic Tasks
+                    </button>
+                  )}
+                </div>
+                <ReportDisplay 
+                  title="Gap Analysis Report" 
+                  content={gapAnalysisReport} 
+                  className="animate-in fade-in duration-500"
+                />
+              </div>
             )}
           </section>
         )}

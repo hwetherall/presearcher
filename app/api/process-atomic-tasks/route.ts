@@ -150,6 +150,7 @@ async function processAtomicTask(task: AtomicTask): Promise<void> {
       .update({ 
         status: 'failed',
         error_message: error.message,
+        result: { report_text: '[This research task failed due to an unexpected error. No data is available for this section.]' },
         completed_at: new Date().toISOString()
       })
       .eq('id', task.id)

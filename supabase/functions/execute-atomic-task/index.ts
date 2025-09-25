@@ -29,7 +29,7 @@ Deno.serve(async (req) => {
 
     // A more robust API call function with independent timeout
     const callApiWithTimeout = (model: string, timeout: number): Promise<string> => {
-      return new Promise(async (resolve, reject) => {
+      return new Promise((resolve, reject) => {
         const timeoutPromise = new Promise((_, rejectTimeout) => {
           setTimeout(() => rejectTimeout(new Error(`API call to ${model} timed out after ${timeout / 1000}s`)), timeout)
         })
@@ -45,7 +45,18 @@ Deno.serve(async (req) => {
               },
               body: JSON.stringify({
                 model: model,
-                messages: [{ role: "user", content: question }],
+                messages: [{ 
+                  role: "user", 
+                  content: `${question}
+
+CRITICAL CITATION REQUIREMENTS:
+- You MUST provide complete source URLs for every fact, statistic, or claim you make
+- Use inline citations with full URLs in brackets: [https://example.com]
+- For each source, include the publication name and date when available
+- At the end of your response, provide a "Sources" section with a numbered list of all URLs used
+- If you cannot find reliable sources, explicitly state "No verifiable public evidence was found"
+- Do NOT use placeholder citations like [1], [2], etc. - always provide the actual URLs` 
+                }],
               }),
             })
 
@@ -69,13 +80,9 @@ Deno.serve(async (req) => {
           }
         })()
 
-        try {
-          // Race the API call against the timeout
-          const result = await Promise.race([apiPromise, timeoutPromise])
-          resolve(result as string)
-        } catch (error) {
-          reject(error)
-        }
+        Promise.race([apiPromise, timeoutPromise])
+          .then((result) => resolve(result as string))
+          .catch((error) => reject(error))
       })
     }
 
@@ -86,21 +93,21 @@ Deno.serve(async (req) => {
     // 1. Try the powerful, slower model first
     try {
       reportText = await callApiWithTimeout("perplexity/sonar-deep-research", 300000) // 5-minute timeout
-    } catch (error) {
+    } catch (error: any) {
       console.warn(`Deep research model failed: ${error.message}`)
       errors.push(error.message)
       
       // 2. If it fails, fall back to the faster, reliable model
       try {
         reportText = await callApiWithTimeout("perplexity/sonar-pro", 45000) // 45s timeout
-      } catch (fallbackError) {
+      } catch (fallbackError: any) {
         console.warn(`Fallback model failed: ${fallbackError.message}`)
         errors.push(fallbackError.message)
         
         // 3. If that also fails, use the fastest, general-purpose model
         try {
           reportText = await callApiWithTimeout("google/gemini-2.5-flash", 25000) // 25s timeout
-        } catch (finalFallbackError) {
+        } catch (finalFallbackError: any) {
           console.error(`All models failed for question: "${question.substring(0, 50)}..."`)
           errors.push(finalFallbackError.message)
         }
@@ -119,7 +126,7 @@ Deno.serve(async (req) => {
       status: 200,
     })
 
-  } catch (error) {
+  } catch (error: any) {
     console.error('Error in execute-atomic-task function:', error)
     
     // Return appropriate error response

@@ -41,6 +41,21 @@ You must adhere to the following structure and principles:
 3.  **Professional Formatting:** Use clear Markdown formatting, including headers, sub-headers, bold text for key terms, and tables for comparative data.
 4.  **Synthesize, Do Not Invent:** You MUST only use the information present in the "Raw Research Data" provided below. Do not introduce any outside knowledge or facts. Your job is to synthesize, not to conduct new research.
 
+**CRITICAL SOURCE AND BIBLIOGRAPHY REQUIREMENTS:**
+5.  **Complete Source Citations:** You MUST cite ALL sources with full URLs throughout the report. Use inline citations in the format: [Source Name](https://full-url.com)
+6.  **Preserve All URLs:** Extract and include EVERY URL mentioned in the raw research data. Do not lose or omit any source URLs.
+7.  **Complete Bibliography:** End your report with a comprehensive "Bibliography" section that lists ALL sources used, formatted as:
+    - [Source Name](https://full-url.com) - Brief description if available
+8.  **No Placeholder Citations:** Never use [1], [2], etc. Always use the actual URLs and source names.
+9.  **Source Verification:** If a claim has multiple sources, cite ALL of them, not just one.
+
+**REQUIRED FINAL SECTION:**
+Your report MUST end with:
+
+## Bibliography
+
+[List ALL sources found in the raw data as clickable markdown links with full URLs]
+
 Here is the raw data from your team:
 ---
 {raw_data}
@@ -74,6 +89,8 @@ async function triggerTaskProcessor(): Promise<void> {
     const internalApiKey = Deno.env.get('INTERNAL_API_KEY') || 'development-key'
     
     console.log(`Attempting to trigger task processor at ${appUrl}/api/process-atomic-tasks`)
+    console.log(`Using NEXT_APP_URL: ${Deno.env.get('NEXT_APP_URL')} (fallback: http://host.docker.internal:3000)`)
+    console.log(`Using INTERNAL_API_KEY: ${internalApiKey ? 'SET' : 'NOT SET'}`)
     
     const response = await fetch(`${appUrl}/api/process-atomic-tasks`, {
       method: 'POST',
@@ -85,7 +102,10 @@ async function triggerTaskProcessor(): Promise<void> {
     })
 
     if (!response.ok) {
-      console.warn(`Task processor trigger failed: ${response.status} ${response.statusText}`)
+      const errorText = await response.text()
+      console.error(`Task processor trigger failed: ${response.status} ${response.statusText}`)
+      console.error(`Response body: ${errorText}`)
+      throw new Error(`HTTP ${response.status}: ${errorText}`)
     } else {
       const result = await response.json()
       console.log(`Task processor triggered successfully: ${result.message}`)
@@ -93,8 +113,12 @@ async function triggerTaskProcessor(): Promise<void> {
   } catch (error) {
     // Don't fail the job if we can't trigger the processor
     // The processor might be running on a schedule anyway
-    console.warn(`Could not reach Next.js app (this is OK if it's not running yet): ${error.message}`)
-    console.warn(`Tasks are queued and will be processed when the Next.js app starts.`)
+    console.error(`Could not reach Next.js app at ${Deno.env.get('NEXT_APP_URL') || 'http://host.docker.internal:3000'}: ${error.message}`)
+    console.warn(`Tasks are queued and will be processed when the Next.js app starts or if the processor runs on schedule.`)
+    console.warn(`If this error persists, check that:`)
+    console.warn(`1. Next.js app is running on the correct port`)
+    console.warn(`2. NEXT_APP_URL environment variable is correct`)
+    console.warn(`3. INTERNAL_API_KEY matches between environments`)
   }
 }
 
@@ -220,7 +244,20 @@ async function checkTasksCompletion(supabaseAdminClient: SupabaseClient, job: Jo
 
   if (allDone) {
     // Update job payload with results
-    const atomic_results = tasks.map(task => task.result || { report_text: '[Task failed]' })
+    const atomic_results = tasks.map(task => {
+      if (task.result && typeof task.result === 'object' && task.result.report_text) {
+        return task.result
+      }
+      console.warn(`[Job ${job.id}] Task ${task.id} has no valid result, using fallback`)
+      return { report_text: '[This research task failed to produce data.]' }
+    })
+    
+    console.log(`[Job ${job.id}] Collected ${atomic_results.length} atomic results. Sample:`, 
+      atomic_results.slice(0, 2).map(r => ({ 
+        hasReportText: !!r.report_text, 
+        textLength: r.report_text?.length || 0,
+        preview: r.report_text?.substring(0, 100) || 'No text'
+      })))
     
     await supabaseAdminClient.from('jobs').update({
       payload: {
@@ -306,6 +343,14 @@ async function executeResearchStage(supabaseAdminClient: SupabaseClient, job: Jo
 async function executeSynthesisStage(supabaseAdminClient: SupabaseClient, job: Job) {
   const { report_id, research_plan, atomic_results } = job.payload
   console.log(`[Job ${job.id}] All tasks complete. Starting synthesis stage.`)
+  
+  console.log(`[Job ${job.id}] Starting synthesis with ${atomic_results?.length || 0} atomic results`)
+  console.log(`[Job ${job.id}] Atomic results sample:`, 
+    atomic_results?.slice(0, 2).map(r => ({ 
+      hasReportText: !!r?.report_text, 
+      textLength: r?.report_text?.length || 0,
+      preview: r?.report_text?.substring(0, 150) || 'No text'
+    })))
 
   // Combine results
   const combinedReportTexts = atomic_results.map((result, index) => {
@@ -313,6 +358,9 @@ async function executeSynthesisStage(supabaseAdminClient: SupabaseClient, job: J
     return `## Research Task ${index + 1}: ${research_plan[index]}\n\n${reportText}`
   })
   const rawData = combinedReportTexts.join('\n\n---\n\n')
+  
+  console.log(`[Job ${job.id}] Raw data length: ${rawData.length} characters`)
+  console.log(`[Job ${job.id}] Raw data preview:`, rawData.substring(0, 500))
 
   // Use the reusable synthesis helper
   const finalReport = await runSynthesis(supabaseAdminClient, rawData)
@@ -355,11 +403,22 @@ async function executeGapAnalysisWorkflow(supabaseAdminClient: SupabaseClient, j
   // All tasks completed, proceed to synthesis
   const { research_plan, atomic_results } = job.payload
   
+  console.log(`[Job ${job.id}] Starting synthesis with ${atomic_results?.length || 0} atomic results`)
+  console.log(`[Job ${job.id}] Atomic results sample:`, 
+    atomic_results?.slice(0, 2).map(r => ({ 
+      hasReportText: !!r?.report_text, 
+      textLength: r?.report_text?.length || 0,
+      preview: r?.report_text?.substring(0, 150) || 'No text'
+    })))
+  
   const combinedReportTexts = atomic_results.map((result, index) => {
     const reportText = result?.report_text || `[This research task failed to produce data.]`
     return `## Research Task ${index + 1}: ${research_plan[index]}\n\n${reportText}`
   })
   const rawData = combinedReportTexts.join('\n\n---\n\n')
+  
+  console.log(`[Job ${job.id}] Raw data length: ${rawData.length} characters`)
+  console.log(`[Job ${job.id}] Raw data preview:`, rawData.substring(0, 500))
 
   console.log(`[Job ${job.id}] Synthesizing final gap analysis report...`)
   const finalReport = await runSynthesis(supabaseAdminClient, rawData)

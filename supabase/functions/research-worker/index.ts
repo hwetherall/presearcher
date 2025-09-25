@@ -28,21 +28,29 @@ You will be given a collection of research findings, each corresponding to a spe
 Your task is to:
 1.  Read and understand all the provided raw research data.
 2.  Identify distinct, verifiable claims from the data.
-3.  For each claim, you MUST identify and extract the source URL(s) that support it.
+3.  For each claim, you MUST identify and extract ALL source URL(s) that support it.
 4.  Synthesize related findings into concise, well-formed claims. For example, if one source says the market is $10B and another says it's $12B, a good claim would be "The market size is estimated to be between $10B and $12B."
 5.  Construct a single JSON object as your final output.
+
+**CRITICAL SOURCE REQUIREMENTS:**
+- You MUST extract and preserve ALL URLs mentioned in the raw data
+- Look for URLs in square brackets [https://...], parentheses (https://...), or plain text
+- Every claim must include ALL supporting URLs, not just one
+- If multiple sources support a claim, include ALL of them in the evidence array
+- Do NOT lose any source URLs from the original research data
 
 **JSON OUTPUT REQUIREMENTS:**
 - The root of the object must be a single key named "claims".
 - The value of "claims" must be an array of objects.
 - Each object in the array must have exactly two keys:
     1.  \`"claim"\`: A string containing the synthesized, evidence-based statement.
-    2.  \`"evidence"\`: An array of strings, where each string is a complete URL pointing to the source. It is normal for this array to contain only one URL.
+    2.  \`"evidence"\`: An array of strings, where each string is a complete URL pointing to the source. Include ALL URLs that support this claim.
 
 **RULES:**
 - You MUST respond with ONLY a valid JSON object. Do not include any explanatory text, markdown formatting, or any characters outside of the JSON structure.
 - Every claim you generate MUST be directly supported by the provided raw data and its sources. DO NOT invent information.
 - If the raw data for a task indicates that no verifiable evidence was found, do not generate a claim for it.
+- PRESERVE ALL SOURCE URLS - do not summarize or omit any URLs found in the raw data
 
 Here is the raw data from the research team:
 ---

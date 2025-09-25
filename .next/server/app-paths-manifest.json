@@ -1,3 +1,5 @@
 {
-  "/api/process-atomic-tasks/route": "app/api/process-atomic-tasks/route.js"
+  "/_not-found/page": "app/_not-found/page.js",
+  "/api/process-atomic-tasks/route": "app/api/process-atomic-tasks/route.js",
+  "/page": "app/page.js"
 }

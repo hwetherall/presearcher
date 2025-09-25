@@ -4,6 +4,7 @@ import React, { useState, useRef, useEffect } from 'react'
 import { supabase } from '@/lib/supabaseClient'
 import ReportDisplay from '@/components/ReportDisplay'
 import LiveProgressDisplay from '@/components/LiveProgressDisplay';
+import AtomicTasksDisplay from '@/components/AtomicTasksDisplay';
 import { Upload, Sparkles, Search, ArrowRight, FileText, AlertCircle, TestTube2, X } from 'lucide-react'
 
 export default function ResearchCopilot() {
@@ -13,6 +14,7 @@ export default function ResearchCopilot() {
   // Project Loading State
   const [existingProjects, setExistingProjects] = useState<any[]>([])
   const [showProjectLoader, setShowProjectLoader] = useState(false)
+  const [selectedReportForAtomicTasks, setSelectedReportForAtomicTasks] = useState<string | null>(null)
 
   // Demo Mode State
   const [isDemoMode, setIsDemoMode] = useState(false)
@@ -101,6 +103,7 @@ Focus on creating a new software category rather than competing in existing mark
   const [isLoadingReport, setIsLoadingReport] = useState(false)
   const [foundationReport, setFoundationReport] = useState('')
   const [currentReportId, setCurrentReportId] = useState<string | null>(null)
+  const [isRegeneratingReport, setIsRegeneratingReport] = useState(false)
   
   // Custom Prompt State
   const [promptMode, setPromptMode] = useState<'preselect' | 'custom'>('preselect')
@@ -219,6 +222,9 @@ Focus on creating a new software category rather than competing in existing mark
           setCurrentReportId(reportId);
           pollForFoundationReport(reportId); // Start polling if we load an in-progress report
         }
+        
+        // Set this report for atomic tasks display
+        setSelectedReportForAtomicTasks(reportId)
       }
       
       setShowProjectLoader(false)
@@ -462,6 +468,44 @@ Focus on creating a new software category rather than competing in existing mark
     }
   }
 
+  // Regenerate Foundation Research Report using existing atomic task data
+  const regenerateFoundationReport = async () => {
+    if (!currentReportId) {
+      setError('No report ID available for regeneration')
+      return
+    }
+
+    try {
+      setError(null)
+      setIsRegeneratingReport(true)
+
+      console.log(`Regenerating report ${currentReportId}`)
+
+      // Call the regenerate-report Supabase function
+      const { data, error: regenerateError } = await supabase.functions.invoke('regenerate-report', {
+        body: { report_id: currentReportId }
+      })
+
+      if (regenerateError) {
+        console.error('Regeneration error details:', regenerateError)
+        throw new Error(`Regeneration failed: ${regenerateError.message}`)
+      }
+
+      if (data?.final_report) {
+        setFoundationReport(data.final_report)
+        console.log(`Report regenerated successfully using ${data.atomic_tasks_used} atomic tasks`)
+      } else {
+        throw new Error('No final report returned from regeneration')
+      }
+
+    } catch (err) {
+      console.error('Error regenerating report:', err)
+      setError(err instanceof Error ? err.message : 'Failed to regenerate report')
+    } finally {
+      setIsRegeneratingReport(false)
+    }
+  }
+
   // Polling function for gap analysis report
   const pollForGapAnalysisReport = (reportId: string) => {
     // Clear any existing polling interval
@@ -620,13 +664,33 @@ Focus on creating a new software category rather than competing in existing mark
                         {project.reports && project.reports.length > 0 && (
                           <div className="space-y-2">
                             {project.reports.map((report: any) => (
-                              <button
-                                key={report.id}
-                                onClick={() => loadProject(project.id, report.id)}
-                                className="w-full text-left px-3 py-2 bg-zinc-800 hover:bg-zinc-700 rounded text-sm text-zinc-300 transition-colors"
-                              >
-                                {report.report_type} - {report.status} ({new Date(report.created_at).toLocaleDateString()})
-                              </button>
+                              <div key={report.id} className="bg-zinc-800 rounded-lg p-3">
+                                <div className="flex items-center justify-between mb-2">
+                                  <span className="text-sm text-zinc-300">
+                                    {report.report_type} - {report.status}
+                                  </span>
+                                  <span className="text-xs text-zinc-500">
+                                    {new Date(report.created_at).toLocaleDateString()}
+                                  </span>
+                                </div>
+                                <div className="flex space-x-2">
+                                  <button
+                                    onClick={() => loadProject(project.id, report.id)}
+                                    className="flex-1 px-3 py-1 bg-blue-600 hover:bg-blue-500 text-white text-xs rounded transition-colors"
+                                  >
+                                    Load Report
+                                  </button>
+                                  <button
+                                    onClick={() => {
+                                      setSelectedReportForAtomicTasks(report.id)
+                                      setShowProjectLoader(false)
+                                    }}
+                                    className="flex-1 px-3 py-1 bg-green-600 hover:bg-green-500 text-white text-xs rounded transition-colors"
+                                  >
+                                    View Tasks
+                                  </button>
+                                </div>
+                              </div>
                             ))}
                           </div>
                         )}
@@ -651,6 +715,26 @@ Focus on creating a new software category rather than competing in existing mark
               </div>
             </div>
           </div>
+        )}
+
+        {/* Atomic Tasks Display */}
+        {selectedReportForAtomicTasks && (
+          <section className="mb-12">
+            <div className="flex items-center justify-between mb-4">
+              <h2 className="text-2xl font-bold text-zinc-100">Atomic Tasks</h2>
+              <button
+                onClick={() => setSelectedReportForAtomicTasks(null)}
+                className="px-4 py-2 bg-zinc-700 hover:bg-zinc-600 text-white rounded-lg transition-colors flex items-center gap-2"
+              >
+                <X className="w-4 h-4" />
+                Close
+              </button>
+            </div>
+            <AtomicTasksDisplay 
+              reportId={selectedReportForAtomicTasks}
+              className="animate-in fade-in duration-500"
+            />
+          </section>
         )}
 
         {/* Stage 1: Foundation Research */}
@@ -909,11 +993,30 @@ Focus on creating a new software category rather than competing in existing mark
 
           {/* Foundation Report Display */}
           {foundationReport && !isLoadingReport && (
-            <ReportDisplay 
-              title="Foundation Research Report" 
-              content={foundationReport} 
-              className="animate-in fade-in duration-500"
-            />
+            <div className="space-y-4">
+              <div className="flex items-center justify-between">
+                <h3 className="text-lg font-semibold text-zinc-100">Foundation Research Report</h3>
+                {currentReportId && (
+                  <button
+                    onClick={() => setSelectedReportForAtomicTasks(currentReportId)}
+                    className="px-4 py-2 bg-green-600 hover:bg-green-500 text-white rounded-lg transition-colors flex items-center gap-2 text-sm"
+                  >
+                    <FileText className="w-4 h-4" />
+                    View Atomic Tasks
+                  </button>
+                )}
+              </div>
+              <ReportDisplay 
+                title="Foundation Research Report" 
+                content={foundationReport} 
+                className="animate-in fade-in duration-500"
+                onRegenerate={() => {
+                  console.log('Regenerate button clicked, currentReportId:', currentReportId)
+                  regenerateFoundationReport()
+                }}
+                isRegenerating={isRegeneratingReport}
+              />
+            </div>
           )}
         </section>
 
@@ -978,11 +1081,25 @@ Focus on creating a new software category rather than competing in existing mark
 
             {/* Gap Analysis Report Display */}
             {gapAnalysisReport && !isLoadingGapReport && (
-              <ReportDisplay 
-                title="Gap Analysis Report" 
-                content={gapAnalysisReport} 
-                className="animate-in fade-in duration-500"
-              />
+              <div className="space-y-4">
+                <div className="flex items-center justify-between">
+                  <h3 className="text-lg font-semibold text-zinc-100">Gap Analysis Report</h3>
+                  {gapReportId && (
+                    <button
+                      onClick={() => setSelectedReportForAtomicTasks(gapReportId)}
+                      className="px-4 py-2 bg-green-600 hover:bg-green-500 text-white rounded-lg transition-colors flex items-center gap-2 text-sm"
+                    >
+                      <FileText className="w-4 h-4" />
+                      View Atomic Tasks
+                    </button>
+                  )}
+                </div>
+                <ReportDisplay 
+                  title="Gap Analysis Report" 
+                  content={gapAnalysisReport} 
+                  className="animate-in fade-in duration-500"
+                />
+              </div>
             )}
           </section>
         )}

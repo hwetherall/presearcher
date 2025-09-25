@@ -3,16 +3,23 @@
 import React from 'react'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
-import { FileText, Copy, Check } from 'lucide-react'
+import { FileText, Copy, Check, RefreshCw } from 'lucide-react'
 
 interface ReportDisplayProps {
   title: string
   content: string
   className?: string
+  onRegenerate?: () => void
+  isRegenerating?: boolean
 }
 
-export default function ReportDisplay({ title, content, className = '' }: ReportDisplayProps) {
+export default function ReportDisplay({ title, content, className = '', onRegenerate, isRegenerating = false }: ReportDisplayProps) {
   const [copied, setCopied] = React.useState(false)
+  
+  // Debug logging
+  React.useEffect(() => {
+    console.log('ReportDisplay props:', { title, hasOnRegenerate: !!onRegenerate, isRegenerating })
+  }, [title, onRegenerate, isRegenerating])
 
   const handleCopy = async () => {
     try {
@@ -31,23 +38,39 @@ export default function ReportDisplay({ title, content, className = '' }: Report
           <FileText className="w-5 h-5 text-blue-400" />
           <h3 className="text-lg font-semibold text-zinc-100">{title}</h3>
         </div>
-        <button
-          onClick={handleCopy}
-          className="flex items-center space-x-2 px-3 py-1.5 rounded-lg bg-zinc-700 hover:bg-zinc-600 transition-colors"
-          aria-label="Copy report content"
-        >
-          {copied ? (
-            <>
-              <Check className="w-4 h-4 text-green-400" />
-              <span className="text-sm text-green-400">Copied!</span>
-            </>
-          ) : (
-            <>
-              <Copy className="w-4 h-4 text-zinc-400" />
-              <span className="text-sm text-zinc-400">Copy</span>
-            </>
+        <div className="flex items-center space-x-2">
+          {/* Always show regenerate button for Foundation Research Reports for debugging */}
+          {(onRegenerate || title === "Foundation Research Report") && (
+            <button
+              onClick={onRegenerate || (() => console.log('Regenerate clicked but no handler'))}
+              disabled={isRegenerating}
+              className="flex items-center space-x-2 px-3 py-1.5 rounded-lg bg-blue-600 hover:bg-blue-500 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+              aria-label="Regenerate report"
+            >
+              <RefreshCw className={`w-4 h-4 text-white ${isRegenerating ? 'animate-spin' : ''}`} />
+              <span className="text-sm text-white">
+                {isRegenerating ? 'Regenerating...' : 'Regenerate'}
+              </span>
+            </button>
           )}
-        </button>
+          <button
+            onClick={handleCopy}
+            className="flex items-center space-x-2 px-3 py-1.5 rounded-lg bg-zinc-700 hover:bg-zinc-600 transition-colors"
+            aria-label="Copy report content"
+          >
+            {copied ? (
+              <>
+                <Check className="w-4 h-4 text-green-400" />
+                <span className="text-sm text-green-400">Copied!</span>
+              </>
+            ) : (
+              <>
+                <Copy className="w-4 h-4 text-zinc-400" />
+                <span className="text-sm text-zinc-400">Copy</span>
+              </>
+            )}
+          </button>
+        </div>
       </div>
       <div className="p-6 max-h-[600px] overflow-y-auto">
         <div className="prose prose-invert prose-zinc max-w-none">
