@@ -9,3 +9,6 @@ node_modules
 
 # Supabase environment files
 supabase/.env.local
+
+# Repomix output files
+repomix-output.xml
