@@ -39,8 +39,8 @@ export default function ReportDisplay({ title, content, className = '', onRegene
           <h3 className="text-lg font-semibold text-zinc-100">{title}</h3>
         </div>
         <div className="flex items-center space-x-2">
-          {/* Always show regenerate button for Foundation Research Reports for debugging */}
-          {(onRegenerate || title === "Foundation Research Report") && (
+          {/* Show regenerate button when handler is provided or for specific report types */}
+          {(onRegenerate || title === "Foundation Research Report" || title === "Gap Analysis Report") && (
             <button
               onClick={onRegenerate || (() => console.log('Regenerate clicked but no handler'))}
               disabled={isRegenerating}

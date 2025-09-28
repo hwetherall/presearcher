@@ -19,15 +19,34 @@ interface AtomicTask {
   report_id: string
   task_index: number
   question: string
+  context?: string // Add this new optional field
   status: string
 }
 
-async function callPerplexityAPI(question: string, model: string, timeout: number): Promise<string> {
-  const controller = new AbortController()
-  const timeoutId = setTimeout(() => controller.abort(), timeout)
+async function callPerplexityAPI(question: string, context: string | undefined, model: string, timeout: number): Promise<string> {
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), timeout);
+
+  // Construct a more intelligent prompt using the context
+  const fullPrompt = `
+**[Project Context]**
+${context || 'No overall project context was provided.'}
+
+**[Specific Question]**
+Your specific task is to research and answer the following question. Use the project context above for strategic guidance and to ensure your answer is relevant to the overall goals.
+Question: "${question}"
+
+**CRITICAL CITATION REQUIREMENTS:**
+- You MUST provide complete source URLs for every fact, statistic, or claim you make.
+- Use inline citations with full URLs in brackets: [https://example.com]
+- For each source, include the publication name and date when available.
+- At the end of your response, provide a "Sources" section with a numbered list of all URLs used.
+- If you cannot find reliable sources, explicitly state "No verifiable public evidence was found".
+- Do NOT use placeholder citations like [1], [2], etc. - always provide the actual URLs.
+`;
 
   try {
-    console.log(`[Atomic Task] Attempting research with model: ${model}`)
+    console.log(`[Atomic Task] Attempting research with model: ${model}`);
     
     const response = await fetch("https://openrouter.ai/api/v1/chat/completions", {
       method: 'POST',
@@ -37,33 +56,33 @@ async function callPerplexityAPI(question: string, model: string, timeout: numbe
       },
       body: JSON.stringify({
         model: model,
-        messages: [{ role: "user", content: question }],
+        messages: [{ role: "user", content: fullPrompt }],
       }),
       signal: controller.signal
-    })
+    });
 
-    clearTimeout(timeoutId)
+    clearTimeout(timeoutId);
 
     if (!response.ok) {
-      const errorBody = await response.text()
-      throw new Error(`API request failed: ${response.status} ${response.statusText} - ${errorBody}`)
+      const errorBody = await response.text();
+      throw new Error(`API request failed: ${response.status} ${response.statusText} - ${errorBody}`);
     }
 
-    const aiResponse = await response.json()
-    const reportText = aiResponse.choices[0]?.message?.content
+    const aiResponse = await response.json();
+    const reportText = aiResponse.choices[0]?.message?.content;
 
     if (!reportText) {
-      throw new Error('No content received from AI model')
+      throw new Error('No content received from AI model');
     }
     
-    console.log(`[Atomic Task] Successfully completed research with model: ${model}`)
-    return reportText
+    console.log(`[Atomic Task] Successfully completed research with model: ${model}`);
+    return reportText;
   } catch (error: any) {
-    clearTimeout(timeoutId)
+    clearTimeout(timeoutId);
     if (error.name === 'AbortError') {
-      throw new Error(`API call to ${model} timed out after ${timeout / 1000}s`)
+      throw new Error(`API call to ${model} timed out after ${timeout / 1000}s`);
     }
-    throw error
+    throw error;
   }
 }
 
@@ -93,21 +112,21 @@ async function processAtomicTask(task: AtomicTask): Promise<void> {
 
     // 1. Try the powerful, slower model first (5 minutes timeout)
     try {
-      reportText = await callPerplexityAPI(task.question, "perplexity/sonar-deep-research", 300000)
+      reportText = await callPerplexityAPI(task.question, task.context, "perplexity/sonar-deep-research", 300000)
     } catch (error: any) {
       console.warn(`[Atomic Task] Deep research model failed: ${error.message}`)
       errors.push(error.message)
       
       // 2. If it fails, fall back to the faster, reliable model (45s timeout)
       try {
-        reportText = await callPerplexityAPI(task.question, "perplexity/sonar-pro", 45000)
+        reportText = await callPerplexityAPI(task.question, task.context, "perplexity/sonar-pro", 45000)
       } catch (fallbackError: any) {
         console.warn(`[Atomic Task] Fallback model failed: ${fallbackError.message}`)
         errors.push(fallbackError.message)
         
         // 3. If that also fails, use the fastest, general-purpose model (25s timeout)
         try {
-          reportText = await callPerplexityAPI(task.question, "google/gemini-2.5-flash", 25000)
+          reportText = await callPerplexityAPI(task.question, task.context, "google/gemini-2.5-flash", 25000)
         } catch (finalFallbackError: any) {
           console.error(`[Atomic Task] All models failed for task ${task.id}`)
           errors.push(finalFallbackError.message)

@@ -65,28 +65,63 @@ Deno.serve(async (req) => {
       throw new Error('SERVER ERROR: OPENROUTER_API_KEY was not found in the environment.')
     }
 
-    // Make API call to OpenRouter
-    const res = await fetch("https://openrouter.ai/api/v1/chat/completions", {
-      method: 'POST',
-      headers: {
-        'Authorization': `Bearer ${openRouterApiKey}`,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
-        model: "google/gemini-2.5-flash",
-        messages: [{ role: "user", content: fullPrompt }],
-        response_format: { "type": "json_object" }
-      }),
-    })
+    // Make API call to OpenRouter with retry logic
+    let aiResponse
+    let generatedContent
+    const maxRetries = 3
+    let lastError
 
-    if (!res.ok) {
-      const errorBody = await res.text()
-      throw new Error(`OpenRouter API request failed: ${res.status} ${res.statusText} - ${errorBody}`)
+    for (let attempt = 1; attempt <= maxRetries; attempt++) {
+      try {
+        console.log(`OpenRouter API attempt ${attempt}/${maxRetries}`)
+        
+        const res = await fetch("https://openrouter.ai/api/v1/chat/completions", {
+          method: 'POST',
+          headers: {
+            'Authorization': `Bearer ${openRouterApiKey}`,
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({
+            model: "google/gemini-2.5-flash",
+            messages: [{ role: "user", content: fullPrompt }],
+            response_format: { "type": "json_object" }
+          }),
+        })
+
+        if (!res.ok) {
+          const errorBody = await res.text()
+          lastError = new Error(`OpenRouter API request failed (attempt ${attempt}): ${res.status} ${res.statusText} - ${errorBody}`)
+          console.log(`Attempt ${attempt} failed:`, lastError.message)
+          
+          // If this is not the last attempt, wait before retrying
+          if (attempt < maxRetries) {
+            const delay = attempt * 1000 // 1s, 2s, 3s delays
+            console.log(`Waiting ${delay}ms before retry...`)
+            await new Promise(resolve => setTimeout(resolve, delay))
+            continue
+          }
+          throw lastError
+        }
+
+        // Parse the AI response
+        aiResponse = await res.json()
+        generatedContent = aiResponse.choices[0].message.content
+        console.log(`OpenRouter API call succeeded on attempt ${attempt}`)
+        break
+
+      } catch (error) {
+        lastError = error
+        console.log(`Attempt ${attempt} failed with error:`, error.message)
+        
+        if (attempt < maxRetries) {
+          const delay = attempt * 1000
+          console.log(`Waiting ${delay}ms before retry...`)
+          await new Promise(resolve => setTimeout(resolve, delay))
+          continue
+        }
+        throw lastError
+      }
     }
-
-    // Parse the AI response
-    const aiResponse = await res.json()
-    const generatedContent = aiResponse.choices[0].message.content
 
     // Parse the JSON response from the AI
     let researchPlan

@@ -120,6 +120,7 @@ Focus on creating a new software category rather than competing in existing mark
   const [gapAnalysisReport, setGapAnalysisReport] = useState('')
   const [gapReportId, setGapReportId] = useState<string | null>(null)
   const [currentProjectId, setCurrentProjectId] = useState<string | null>(null)
+  const [isRegeneratingGapReport, setIsRegeneratingGapReport] = useState(false)
 
   // Error state
   const [error, setError] = useState<string | null>(null)
@@ -503,6 +504,44 @@ Focus on creating a new software category rather than competing in existing mark
       setError(err instanceof Error ? err.message : 'Failed to regenerate report')
     } finally {
       setIsRegeneratingReport(false)
+    }
+  }
+
+  // Regenerate Gap Analysis Report using existing atomic task data
+  const regenerateGapAnalysisReport = async () => {
+    if (!gapReportId) {
+      setError('No gap report ID available for regeneration')
+      return
+    }
+
+    try {
+      setError(null)
+      setIsRegeneratingGapReport(true)
+
+      console.log(`Regenerating gap analysis report ${gapReportId}`)
+
+      // Call the regenerate-gap-report Supabase function
+      const { data, error: regenerateError } = await supabase.functions.invoke('regenerate-gap-report', {
+        body: { report_id: gapReportId }
+      })
+
+      if (regenerateError) {
+        console.error('Gap regeneration error details:', regenerateError)
+        throw new Error(`Gap regeneration failed: ${regenerateError.message}`)
+      }
+
+      if (data?.final_report) {
+        setGapAnalysisReport(data.final_report)
+        console.log(`Gap analysis report regenerated successfully using ${data.atomic_tasks_used} atomic tasks`)
+      } else {
+        throw new Error('No final report returned from gap regeneration')
+      }
+
+    } catch (err) {
+      console.error('Error regenerating gap analysis report:', err)
+      setError(err instanceof Error ? err.message : 'Failed to regenerate gap analysis report')
+    } finally {
+      setIsRegeneratingGapReport(false)
     }
   }
 
@@ -1098,6 +1137,11 @@ Focus on creating a new software category rather than competing in existing mark
                   title="Gap Analysis Report" 
                   content={gapAnalysisReport} 
                   className="animate-in fade-in duration-500"
+                  onRegenerate={() => {
+                    console.log('Regenerate gap analysis button clicked, gapReportId:', gapReportId)
+                    regenerateGapAnalysisReport()
+                  }}
+                  isRegenerating={isRegeneratingGapReport}
                 />
               </div>
             )}

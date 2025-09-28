@@ -26,6 +26,7 @@ interface AtomicTask {
   report_id: string;
   task_index: number;
   question: string;
+  context?: string;
   status: 'pending' | 'processing' | 'completed' | 'failed';
   result?: { report_text: string };
 }
@@ -135,6 +136,14 @@ async function executePlanningStage(supabaseAdminClient: SupabaseClient, job: Jo
   }).eq('id', job.id)
   
   let research_plan: string[]
+  let projectData: any = null
+  
+  // First, always fetch project data for context
+  const { data: reportData } = await supabaseAdminClient.from('reports').select('project_id').eq('id', job.payload.report_id).single()
+  const { data: fetchedProjectData } = await supabaseAdminClient.from('projects').select(`
+    project_context, key_documents_summary, custom_prompt, chapter_templates ( chapter_prompt )
+  `).eq('id', reportData.project_id).single()
+  projectData = fetchedProjectData
   
   if (job.job_type === 'execute_gap_analysis') {
     // For gap analysis jobs, generate plan using gap analysis function
@@ -152,11 +161,6 @@ async function executePlanningStage(supabaseAdminClient: SupabaseClient, job: Jo
     research_plan = planResponse.data.research_plan
   } else {
     // For regular research jobs, use existing logic
-    const { data: reportData } = await supabaseAdminClient.from('reports').select('project_id').eq('id', job.payload.report_id).single()
-    const { data: projectData } = await supabaseAdminClient.from('projects').select(`
-      project_context, key_documents_summary, custom_prompt, chapter_templates ( chapter_prompt )
-    `).eq('id', reportData.project_id).single()
-
     // Check if custom research plan is provided, otherwise generate one
     research_plan = job.payload.custom_research_plan
     
@@ -181,12 +185,15 @@ async function executePlanningStage(supabaseAdminClient: SupabaseClient, job: Jo
   
   console.log(`[Job ${job.id}] Planning complete. Generated ${research_plan.length} tasks.`)
 
-  // Create atomic tasks in the database
+  // Create atomic tasks in the database, now including the project context
+  const fullContext = `Project Context:\n${projectData.project_context}\n\nKey Documents Summary:\n${projectData.key_documents_summary}`;
+
   const tasksToCreate = research_plan.map((question, index) => ({
     job_id: job.id,
     report_id: job.payload.report_id,
     task_index: index,
     question: question,
+    context: fullContext, // Add the combined context here
     status: 'pending'
   }))
 
